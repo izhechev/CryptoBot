@@ -1,0 +1,14 @@
+ccxt>=4.3.0
+pandas-ta>=0.3.14b
+pandas>=2.2.0
+numpy>=1.26.0
+aiohttp>=3.9.0
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+python-dotenv>=1.0.0
+pyyaml>=6.0.0
+google-generativeai>=0.7.0
+python-telegram-bot>=21.0.0
+pytest>=8.2.0
+pytest-asyncio>=0.23.0
+httpx>=0.27.0
