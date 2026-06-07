@@ -26,3 +26,15 @@ paper_trading:
   stop_loss_pct: 5.0
   max_hold_hours: 24
   notional_size: 1000.0
+
+# Whale-ride strategy: catch the footprint of large players — an abnormal volume
+# surge plus a sharp price thrust in the same window. Tracked as a separate
+# strategy with its own positions, exits, and win/loss stats.
+whale:
+  enabled: true
+  volume_multiple: 3.0          # latest candle volume >= 3x recent average
+  price_thrust_pct: 3.0         # price up >= 3% over the thrust lookback
+  thrust_lookback: 3            # number of candles for the price-thrust window
+  take_profit_pct: 15.0
+  stop_loss_pct: 7.0
+  max_hold_hours: 12

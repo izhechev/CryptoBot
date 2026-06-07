@@ -17,6 +17,16 @@ class PaperTrading:
         self._cfg = cfg
         self._db = db
 
+    def _exit_params(self, strategy: str) -> tuple[float, float, int]:
+        """Return (take_profit_pct, stop_loss_pct, max_hold_hours) for a strategy."""
+        if strategy == "whale":
+            return (self._cfg.whale_take_profit_pct,
+                    self._cfg.whale_stop_loss_pct,
+                    self._cfg.whale_max_hold_hours)
+        return (self._cfg.take_profit_pct,
+                self._cfg.stop_loss_pct,
+                self._cfg.max_hold_hours)
+
     def open_position(self, event: SignalEvent, entry_price: float) -> Position:
         pos = Position(
             id=None,
@@ -28,23 +38,25 @@ class PaperTrading:
             exit_at=None,
             outcome=None,
             pnl_pct=None,
+            strategy=event.strategy,
         )
         return self._db.save_position(pos)
 
     def check_position(self, pos: Position, current_price: float) -> Optional[TradeOutcome]:
-        """Check exit conditions. Returns an outcome if the position should close, else None."""
+        """Check exit conditions using strategy-specific TP/SL/timeout. None if held."""
+        take_profit_pct, stop_loss_pct, max_hold_hours = self._exit_params(pos.strategy)
         pnl_pct = (current_price - pos.entry_price) / pos.entry_price * 100
 
-        if pnl_pct >= self._cfg.take_profit_pct:
+        if pnl_pct >= take_profit_pct:
             return TradeOutcome.WIN
-        if pnl_pct <= -self._cfg.stop_loss_pct:
+        if pnl_pct <= -stop_loss_pct:
             return TradeOutcome.LOSS
 
         entry_at = pos.entry_at
         if entry_at.tzinfo is None:
             entry_at = entry_at.replace(tzinfo=timezone.utc)
         elapsed = datetime.now(timezone.utc) - entry_at
-        if elapsed >= timedelta(hours=self._cfg.max_hold_hours):
+        if elapsed >= timedelta(hours=max_hold_hours):
             return TradeOutcome.TIMEOUT
 
         return None

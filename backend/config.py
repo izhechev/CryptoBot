@@ -28,6 +28,13 @@ class Config:
     stop_loss_pct: float
     max_hold_hours: int
     notional_size: float
+    whale_enabled: bool
+    whale_volume_multiple: float
+    whale_price_thrust_pct: float
+    whale_thrust_lookback: int
+    whale_take_profit_pct: float
+    whale_stop_loss_pct: float
+    whale_max_hold_hours: int
     cmc_api_key: str
     gemini_api_key: str
     telegram_bot_token: str
@@ -42,6 +49,7 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
     scoring = raw["scoring"]
     ind = scoring["indicators"]
     pt = raw["paper_trading"]
+    whale = raw.get("whale", {})
 
     return Config(
         scan_interval_minutes=scan["interval_minutes"],
@@ -65,6 +73,13 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         stop_loss_pct=float(pt["stop_loss_pct"]),
         max_hold_hours=int(pt["max_hold_hours"]),
         notional_size=float(pt["notional_size"]),
+        whale_enabled=bool(whale.get("enabled", True)),
+        whale_volume_multiple=float(whale.get("volume_multiple", 3.0)),
+        whale_price_thrust_pct=float(whale.get("price_thrust_pct", 3.0)),
+        whale_thrust_lookback=int(whale.get("thrust_lookback", 3)),
+        whale_take_profit_pct=float(whale.get("take_profit_pct", 15.0)),
+        whale_stop_loss_pct=float(whale.get("stop_loss_pct", 7.0)),
+        whale_max_hold_hours=int(whale.get("max_hold_hours", 12)),
         cmc_api_key=os.environ.get("CMC_API_KEY", ""),
         gemini_api_key=os.environ.get("GEMINI_API_KEY", ""),
         telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),

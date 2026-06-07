@@ -14,6 +14,7 @@ class Signal:
     news_score: float
     gemini_explanation: str
     fired_at: datetime
+    strategy: str = "standard"
 
 
 @dataclass
@@ -27,6 +28,7 @@ class Position:
     exit_at: Optional[datetime]
     outcome: Optional[str]
     pnl_pct: Optional[float]
+    strategy: str = "standard"
 
 
 @dataclass
@@ -60,6 +62,24 @@ def _dts(value: Optional[datetime]) -> Optional[str]:
     return value.isoformat()
 
 
+def _signal_from_row(r) -> Signal:
+    return Signal(
+        id=r["id"], coin_symbol=r["coin_symbol"], coin_name=r["coin_name"],
+        total_score=r["total_score"], technical_score=r["technical_score"],
+        news_score=r["news_score"], gemini_explanation=r["gemini_explanation"],
+        fired_at=_dt(r["fired_at"]), strategy=r["strategy"],
+    )
+
+
+def _position_from_row(r) -> Position:
+    return Position(
+        id=r["id"], signal_id=r["signal_id"], coin_symbol=r["coin_symbol"],
+        entry_price=r["entry_price"], entry_at=_dt(r["entry_at"]),
+        exit_price=r["exit_price"], exit_at=_dt(r["exit_at"]),
+        outcome=r["outcome"], pnl_pct=r["pnl_pct"], strategy=r["strategy"],
+    )
+
+
 class Storage:
     def __init__(self, db_path: str = "cryptobot.db"):
         self.db_path = db_path
@@ -80,7 +100,8 @@ class Storage:
                     technical_score REAL NOT NULL,
                     news_score REAL NOT NULL,
                     gemini_explanation TEXT NOT NULL,
-                    fired_at TEXT NOT NULL
+                    fired_at TEXT NOT NULL,
+                    strategy TEXT NOT NULL DEFAULT 'standard'
                 );
                 CREATE TABLE IF NOT EXISTS positions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,7 +112,8 @@ class Storage:
                     exit_price REAL,
                     exit_at TEXT,
                     outcome TEXT,
-                    pnl_pct REAL
+                    pnl_pct REAL,
+                    strategy TEXT NOT NULL DEFAULT 'standard'
                 );
                 CREATE TABLE IF NOT EXISTS price_ticks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,41 +136,31 @@ class Storage:
         with self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO signals (coin_symbol, coin_name, total_score, technical_score, "
-                "news_score, gemini_explanation, fired_at) VALUES (?,?,?,?,?,?,?)",
+                "news_score, gemini_explanation, fired_at, strategy) VALUES (?,?,?,?,?,?,?,?)",
                 (sig.coin_symbol, sig.coin_name, sig.total_score, sig.technical_score,
-                 sig.news_score, sig.gemini_explanation, _dts(sig.fired_at)),
+                 sig.news_score, sig.gemini_explanation, _dts(sig.fired_at), sig.strategy),
             )
             return Signal(**{**sig.__dict__, "id": cur.lastrowid})
 
     def get_signal(self, signal_id: int) -> Optional[Signal]:
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM signals WHERE id=?", (signal_id,)).fetchone()
-            if row is None:
-                return None
-            return Signal(
-                id=row["id"], coin_symbol=row["coin_symbol"], coin_name=row["coin_name"],
-                total_score=row["total_score"], technical_score=row["technical_score"],
-                news_score=row["news_score"], gemini_explanation=row["gemini_explanation"],
-                fired_at=_dt(row["fired_at"]),
-            )
+            return _signal_from_row(row) if row else None
 
     def get_recent_signals(self, limit: int = 50) -> list[Signal]:
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM signals ORDER BY fired_at DESC LIMIT ?", (limit,)
             ).fetchall()
-            return [Signal(id=r["id"], coin_symbol=r["coin_symbol"], coin_name=r["coin_name"],
-                           total_score=r["total_score"], technical_score=r["technical_score"],
-                           news_score=r["news_score"], gemini_explanation=r["gemini_explanation"],
-                           fired_at=_dt(r["fired_at"])) for r in rows]
+            return [_signal_from_row(r) for r in rows]
 
     def save_position(self, pos: Position) -> Position:
         with self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO positions (signal_id, coin_symbol, entry_price, entry_at, "
-                "exit_price, exit_at, outcome, pnl_pct) VALUES (?,?,?,?,?,?,?,?)",
+                "exit_price, exit_at, outcome, pnl_pct, strategy) VALUES (?,?,?,?,?,?,?,?,?)",
                 (pos.signal_id, pos.coin_symbol, pos.entry_price, _dts(pos.entry_at),
-                 pos.exit_price, _dts(pos.exit_at), pos.outcome, pos.pnl_pct),
+                 pos.exit_price, _dts(pos.exit_at), pos.outcome, pos.pnl_pct, pos.strategy),
             )
             return Position(**{**pos.__dict__, "id": cur.lastrowid})
 
@@ -157,22 +169,14 @@ class Storage:
             rows = conn.execute(
                 "SELECT * FROM positions WHERE outcome IS NULL ORDER BY entry_at"
             ).fetchall()
-            return [Position(id=r["id"], signal_id=r["signal_id"],
-                             coin_symbol=r["coin_symbol"], entry_price=r["entry_price"],
-                             entry_at=_dt(r["entry_at"]), exit_price=r["exit_price"],
-                             exit_at=_dt(r["exit_at"]), outcome=r["outcome"],
-                             pnl_pct=r["pnl_pct"]) for r in rows]
+            return [_position_from_row(r) for r in rows]
 
     def get_all_positions(self, limit: int = 100) -> list[Position]:
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM positions ORDER BY entry_at DESC LIMIT ?", (limit,)
             ).fetchall()
-            return [Position(id=r["id"], signal_id=r["signal_id"],
-                             coin_symbol=r["coin_symbol"], entry_price=r["entry_price"],
-                             entry_at=_dt(r["entry_at"]), exit_price=r["exit_price"],
-                             exit_at=_dt(r["exit_at"]), outcome=r["outcome"],
-                             pnl_pct=r["pnl_pct"]) for r in rows]
+            return [_position_from_row(r) for r in rows]
 
     def close_position(self, position_id: int, exit_price: float,
                        exit_at: datetime, outcome: str, pnl_pct: float) -> None:
@@ -182,11 +186,11 @@ class Storage:
                 (exit_price, _dts(exit_at), outcome, pnl_pct, position_id),
             )
 
-    def has_open_position(self, coin_symbol: str) -> bool:
+    def has_open_position(self, coin_symbol: str, strategy: str = "standard") -> bool:
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT 1 FROM positions WHERE coin_symbol=? AND outcome IS NULL",
-                (coin_symbol,)
+                "SELECT 1 FROM positions WHERE coin_symbol=? AND strategy=? AND outcome IS NULL",
+                (coin_symbol, strategy)
             ).fetchone()
             return row is not None
 
@@ -217,17 +221,29 @@ class Storage:
             )
             return ScanLog(**{**log.__dict__, "id": cur.lastrowid})
 
-    def get_stats(self) -> dict:
+    def get_stats(self, strategy: Optional[str] = None) -> dict:
+        """Aggregate win/loss stats. Pass a strategy to scope stats to one strategy."""
+        where_pos = "WHERE outcome IS NOT NULL"
+        where_open = "WHERE outcome IS NULL"
+        where_sig = "WHERE date(fired_at) = date('now')"
+        params: tuple = ()
+        if strategy is not None:
+            where_pos += " AND strategy=?"
+            where_open += " AND strategy=?"
+            where_sig += " AND strategy=?"
+            params = (strategy,)
+
         with self._conn() as conn:
-            total = conn.execute("SELECT COUNT(*) FROM positions WHERE outcome IS NOT NULL").fetchone()[0]
-            wins = conn.execute("SELECT COUNT(*) FROM positions WHERE outcome='win'").fetchone()[0]
-            open_count = conn.execute("SELECT COUNT(*) FROM positions WHERE outcome IS NULL").fetchone()[0]
-            signals_today = conn.execute(
-                "SELECT COUNT(*) FROM signals WHERE date(fired_at) = date('now')"
+            total = conn.execute(f"SELECT COUNT(*) FROM positions {where_pos}", params).fetchone()[0]
+            win_params = (("win",) + params) if strategy is None else ("win", strategy)
+            wins = conn.execute(
+                "SELECT COUNT(*) FROM positions WHERE outcome=?"
+                + (" AND strategy=?" if strategy is not None else ""),
+                win_params,
             ).fetchone()[0]
-            avg_pnl = conn.execute(
-                "SELECT AVG(pnl_pct) FROM positions WHERE outcome IS NOT NULL"
-            ).fetchone()[0]
+            open_count = conn.execute(f"SELECT COUNT(*) FROM positions {where_open}", params).fetchone()[0]
+            signals_today = conn.execute(f"SELECT COUNT(*) FROM signals {where_sig}", params).fetchone()[0]
+            avg_pnl = conn.execute(f"SELECT AVG(pnl_pct) FROM positions {where_pos}", params).fetchone()[0]
             return {
                 "total_closed": total,
                 "wins": wins,

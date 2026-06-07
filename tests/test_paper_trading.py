@@ -75,3 +75,45 @@ def test_close_win_updates_db(trader, signal_event, db):
     closed = db.get_all_positions()
     assert closed[0].outcome == "win"
     assert closed[0].pnl_pct > 10.0
+
+
+@pytest.fixture
+def whale_event(db):
+    saved = db.save_signal(Signal(
+        id=None, coin_symbol="PEPE", coin_name="Pepe", total_score=100.0,
+        technical_score=5.0, news_score=0.0, gemini_explanation="Whale move.",
+        fired_at=datetime.now(timezone.utc), strategy="whale",
+    ))
+    return SignalEvent(
+        coin_symbol="PEPE", coin_name="Pepe", total_score=100.0,
+        technical_score=5.0, news_score=0.0, gemini_explanation="Whale move.",
+        signal_id=saved.id, strategy="whale",
+    )
+
+
+def test_whale_position_uses_whale_exits(trader, whale_event):
+    """Whale TP is +15%: a +12% move (which wins a standard trade) must still hold."""
+    pos = trader.open_position(whale_event, entry_price=100.0)
+    assert pos.strategy == "whale"
+    assert trader.check_position(pos, current_price=112.0) is None      # +12% -> hold
+    assert trader.check_position(pos, current_price=115.5) == TradeOutcome.WIN   # +15.5%
+
+
+def test_whale_position_uses_whale_stop(trader, whale_event):
+    """Whale stop is -7%: a -6% move (which stops a standard trade) must still hold."""
+    pos = trader.open_position(whale_event, entry_price=100.0)
+    assert trader.check_position(pos, current_price=94.0) is None       # -6% -> hold
+    assert trader.check_position(pos, current_price=92.5) == TradeOutcome.LOSS   # -7.5%
+
+
+def test_stats_scoped_by_strategy(trader, signal_event, whale_event, db):
+    std = trader.open_position(signal_event, entry_price=150.0)
+    trader.close_position(std, current_price=165.5, outcome=TradeOutcome.WIN)
+    whale = trader.open_position(whale_event, entry_price=100.0)
+    trader.close_position(whale, current_price=92.5, outcome=TradeOutcome.LOSS)
+
+    assert db.get_stats(strategy="standard")["wins"] == 1
+    assert db.get_stats(strategy="standard")["losses"] == 0
+    assert db.get_stats(strategy="whale")["wins"] == 0
+    assert db.get_stats(strategy="whale")["losses"] == 1
+    assert db.get_stats()["total_closed"] == 2
