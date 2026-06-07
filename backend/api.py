@@ -1,0 +1,101 @@
+import logging
+from typing import Any
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from backend.config import Config
+from backend.storage import Storage
+
+logger = logging.getLogger(__name__)
+
+
+class _WSManager:
+    def __init__(self):
+        self._connections: list[WebSocket] = []
+
+    async def connect(self, ws: WebSocket) -> None:
+        await ws.accept()
+        self._connections.append(ws)
+
+    def disconnect(self, ws: WebSocket) -> None:
+        if ws in self._connections:
+            self._connections.remove(ws)
+
+    async def broadcast(self, message: dict) -> None:
+        dead = []
+        for ws in self._connections:
+            try:
+                await ws.send_json(message)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(ws)
+
+
+def _serialize(obj: Any) -> Any:
+    if hasattr(obj, "isoformat"):
+        return obj.isoformat()
+    if hasattr(obj, "__dict__"):
+        return {k: _serialize(v) for k, v in vars(obj).items()}
+    return obj
+
+
+def create_app(db: Storage, cfg: Config) -> FastAPI:
+    app = FastAPI(title="CryptoBot API")
+    ws_manager = _WSManager()
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    app.state.broadcast = ws_manager.broadcast
+
+    @app.get("/signals")
+    def get_signals(limit: int = 50):
+        return [_serialize(s) for s in db.get_recent_signals(limit=limit)]
+
+    @app.get("/positions")
+    def get_positions(limit: int = 100):
+        return [_serialize(p) for p in db.get_all_positions(limit=limit)]
+
+    @app.get("/positions/{position_id}/ticks")
+    def get_ticks(position_id: int):
+        return [_serialize(t) for t in db.get_ticks_for_position(position_id)]
+
+    @app.get("/stats")
+    def get_stats():
+        return {
+            "overall": db.get_stats(),
+            "standard": db.get_stats(strategy="standard"),
+            "whale": db.get_stats(strategy="whale"),
+        }
+
+    @app.get("/config")
+    def get_config():
+        return {
+            "signal_threshold": cfg.signal_threshold,
+            "pre_filter_threshold": cfg.pre_filter_threshold,
+            "technical_weight": cfg.technical_weight,
+            "news_weight": cfg.news_weight,
+            "take_profit_pct": cfg.take_profit_pct,
+            "stop_loss_pct": cfg.stop_loss_pct,
+            "max_hold_hours": cfg.max_hold_hours,
+            "scan_interval_minutes": cfg.scan_interval_minutes,
+            "tracking_interval_seconds": cfg.tracking_interval_seconds,
+            "whale_enabled": cfg.whale_enabled,
+            "whale_take_profit_pct": cfg.whale_take_profit_pct,
+            "whale_stop_loss_pct": cfg.whale_stop_loss_pct,
+            "whale_max_hold_hours": cfg.whale_max_hold_hours,
+        }
+
+    @app.websocket("/ws")
+    async def websocket_endpoint(ws: WebSocket):
+        await ws_manager.connect(ws)
+        try:
+            while True:
+                await ws.receive_text()
+        except WebSocketDisconnect:
+            ws_manager.disconnect(ws)
+
+    return app
