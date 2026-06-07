@@ -1,0 +1,8 @@
+.env
+.superpowers/
+__pycache__/
+*.pyc
+*.db
+.venv/
+node_modules/
+.next/

@@ -11,16 +11,21 @@ scan:
   exchange: kucoin
   candle_timeframe: "15m"
   candle_limit: 100
+  htf_timeframe: "4h"
+  htf_candle_limit: 80
 scoring:
   pre_filter_threshold: 55.0
   signal_threshold: 75.0
   technical_weight: 0.60
   news_weight: 0.40
+  min_volume_24h: 2000000
+  downtrend_penalty: 0.5
   indicators:
-    macd_weight: 35
-    rsi_weight: 25
-    ema_weight: 20
-    volume_weight: 20
+    macd_weight: 30
+    rsi_weight: 20
+    ema_weight: 15
+    volume_weight: 15
+    divergence_weight: 20
 paper_trading:
   take_profit_pct: 8.0
   stop_loss_pct: 4.0
@@ -40,3 +45,6 @@ paper_trading:
     assert cfg.take_profit_pct == 8.0
     assert cfg.cmc_api_key == "cmc123"
     assert cfg.telegram_chat_id == "99999"
+    assert cfg.htf_timeframe == "4h"
+    assert cfg.min_volume_24h == 2000000
+    assert cfg.divergence_weight == 20

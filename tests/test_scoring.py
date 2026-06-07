@@ -3,15 +3,22 @@ from backend.scoring import compute_total_score
 from backend.indicators import IndicatorScores
 
 
+def _scores(total: float) -> IndicatorScores:
+    return IndicatorScores(
+        macd_score=0.0, rsi_score=0.0, ema_score=0.0, volume_score=0.0,
+        divergence_score=0.0, htf_uptrend=True, total=total,
+    )
+
+
 def test_weighted_combination(cfg):
-    tech = IndicatorScores(macd_score=35, rsi_score=25, ema_score=20, volume_score=20, total=100.0)
+    tech = _scores(100.0)
     news_score = 100.0
     total = compute_total_score(tech.total, news_score, cfg)
     assert abs(total - 100.0) < 0.01
 
 
 def test_zero_news_score(cfg):
-    tech = IndicatorScores(macd_score=35, rsi_score=25, ema_score=20, volume_score=20, total=100.0)
+    tech = _scores(100.0)
     total = compute_total_score(tech.total, 0.0, cfg)
     assert abs(total - 65.0) < 0.01
 

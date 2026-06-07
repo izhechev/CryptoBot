@@ -11,14 +11,19 @@ class Config:
     exchange: str
     candle_timeframe: str
     candle_limit: int
+    htf_timeframe: str
+    htf_candle_limit: int
     pre_filter_threshold: float
     signal_threshold: float
     technical_weight: float
     news_weight: float
+    min_volume_24h: float
+    downtrend_penalty: float
     macd_weight: float
     rsi_weight: float
     ema_weight: float
     volume_weight: float
+    divergence_weight: float
     take_profit_pct: float
     stop_loss_pct: float
     max_hold_hours: int
@@ -43,14 +48,19 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         exchange=scan["exchange"],
         candle_timeframe=scan["candle_timeframe"],
         candle_limit=scan["candle_limit"],
+        htf_timeframe=scan["htf_timeframe"],
+        htf_candle_limit=scan["htf_candle_limit"],
         pre_filter_threshold=float(scoring["pre_filter_threshold"]),
         signal_threshold=float(scoring["signal_threshold"]),
         technical_weight=float(scoring["technical_weight"]),
         news_weight=float(scoring["news_weight"]),
+        min_volume_24h=float(scoring["min_volume_24h"]),
+        downtrend_penalty=float(scoring["downtrend_penalty"]),
         macd_weight=float(ind["macd_weight"]),
         rsi_weight=float(ind["rsi_weight"]),
         ema_weight=float(ind["ema_weight"]),
         volume_weight=float(ind["volume_weight"]),
+        divergence_weight=float(ind["divergence_weight"]),
         take_profit_pct=float(pt["take_profit_pct"]),
         stop_loss_pct=float(pt["stop_loss_pct"]),
         max_hold_hours=int(pt["max_hold_hours"]),

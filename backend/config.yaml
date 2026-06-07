@@ -2,19 +2,24 @@
 scan:
   interval_minutes: 30
   exchange: binance
-  candle_timeframe: "15m"
+  candle_timeframe: "15m"        # entry / signal timeframe
   candle_limit: 200
+  htf_timeframe: "4h"            # higher timeframe for trend confluence filter
+  htf_candle_limit: 100
 
 scoring:
-  pre_filter_threshold: 60
-  signal_threshold: 80
+  pre_filter_threshold: 55       # min technical score before fetching news + calling Gemini
+  signal_threshold: 75           # min total score to fire a MUST-BUY signal
   technical_weight: 0.65
   news_weight: 0.35
+  min_volume_24h: 1000000        # CMC server-side filter: skip illiquid coins
+  downtrend_penalty: 0.5         # multiply technical score if 4h is NOT in an uptrend
   indicators:
-    macd_weight: 35
-    rsi_weight: 25
-    ema_weight: 20
-    volume_weight: 20
+    macd_weight: 30              # momentum (gated by volume confirmation)
+    rsi_weight: 20               # uptrend-aware RSI
+    ema_weight: 15               # price above EMA-50 on entry timeframe
+    volume_weight: 15            # volume spike confirmation
+    divergence_weight: 20        # bullish MACD/price divergence
 
 paper_trading:
   take_profit_pct: 10.0
