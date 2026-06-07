@@ -27,6 +27,14 @@ paper_trading:
   max_hold_hours: 24
   notional_size: 1000.0
 
+# How open positions are tracked. Checking the 1m candle HIGH/LOW (not just the
+# last price) catches brief intra-minute spikes that would otherwise be missed —
+# e.g. a coin that touches +10% for only a minute still books the win.
+tracking:
+  interval_seconds: 60          # how often to poll open positions
+  candle_timeframe: "1m"        # timeframe whose high/low is scanned for TP/SL touches
+  candle_limit: 60
+
 # Whale-ride strategy: catch the footprint of large players — an abnormal volume
 # surge plus a sharp price thrust in the same window. Tracked as a separate
 # strategy with its own positions, exits, and win/loss stats.

@@ -61,6 +61,44 @@ class PaperTrading:
 
         return None
 
+    def check_position_range(
+        self,
+        pos: Position,
+        high: float,
+        low: float,
+        current_price: float,
+    ) -> Optional[TradeOutcome]:
+        """
+        Spike-aware exit check using the recent candle's HIGH and LOW, so a brief
+        intra-interval spike that touched the take-profit (or stop) is caught even
+        if it reverted before we polled. Take-profit is checked against the high,
+        stop-loss against the low. None if the position should stay open.
+        """
+        take_profit_pct, stop_loss_pct, max_hold_hours = self._exit_params(pos.strategy)
+        high_pnl = (high - pos.entry_price) / pos.entry_price * 100
+        low_pnl = (low - pos.entry_price) / pos.entry_price * 100
+
+        if high_pnl >= take_profit_pct:
+            return TradeOutcome.WIN
+        if low_pnl <= -stop_loss_pct:
+            return TradeOutcome.LOSS
+
+        entry_at = pos.entry_at
+        if entry_at.tzinfo is None:
+            entry_at = entry_at.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - entry_at >= timedelta(hours=max_hold_hours):
+            return TradeOutcome.TIMEOUT
+        return None
+
+    def exit_price_for(self, pos: Position, outcome: TradeOutcome, current_price: float) -> float:
+        """Realistic fill price: target on a win, stop on a loss, market on timeout."""
+        take_profit_pct, stop_loss_pct, _ = self._exit_params(pos.strategy)
+        if outcome == TradeOutcome.WIN:
+            return pos.entry_price * (1 + take_profit_pct / 100)
+        if outcome == TradeOutcome.LOSS:
+            return pos.entry_price * (1 - stop_loss_pct / 100)
+        return current_price
+
     def record_tick(self, pos: Position, current_price: float) -> None:
         self._db.save_price_tick(PriceTick(
             id=None,

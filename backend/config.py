@@ -35,6 +35,9 @@ class Config:
     whale_take_profit_pct: float
     whale_stop_loss_pct: float
     whale_max_hold_hours: int
+    tracking_interval_seconds: int
+    tracking_timeframe: str
+    tracking_candle_limit: int
     cmc_api_key: str
     gemini_api_key: str
     telegram_bot_token: str
@@ -50,6 +53,7 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
     ind = scoring["indicators"]
     pt = raw["paper_trading"]
     whale = raw.get("whale", {})
+    tracking = raw.get("tracking", {})
 
     return Config(
         scan_interval_minutes=scan["interval_minutes"],
@@ -80,6 +84,9 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         whale_take_profit_pct=float(whale.get("take_profit_pct", 15.0)),
         whale_stop_loss_pct=float(whale.get("stop_loss_pct", 7.0)),
         whale_max_hold_hours=int(whale.get("max_hold_hours", 12)),
+        tracking_interval_seconds=int(tracking.get("interval_seconds", 60)),
+        tracking_timeframe=tracking.get("candle_timeframe", "1m"),
+        tracking_candle_limit=int(tracking.get("candle_limit", 60)),
         cmc_api_key=os.environ.get("CMC_API_KEY", ""),
         gemini_api_key=os.environ.get("GEMINI_API_KEY", ""),
         telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
