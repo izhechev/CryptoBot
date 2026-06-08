@@ -1,6 +1,8 @@
 # backend/config.yaml
 scan:
   interval_minutes: 30
+  max_open_positions: 6         # don't stack more than this many correlated micro-caps
+  regime_filter: true           # skip NEW entries while BTC is below its 4h EMA-50 (don't long a falling market)
   # Candle/price sources, tried in order. A coin is routed to the first exchange
   # that lists it as a LIVE spot market, so coins not on Binance are still covered
   # and delisted/frozen markets (e.g. spot LIT/USDT) are skipped.
@@ -30,6 +32,13 @@ paper_trading:
   stop_loss_pct: 5.0
   max_hold_hours: 24
   notional_size: 1000.0
+  # Time-decaying take-profit (minutes: target %). Grab the early pop, then accept
+  # progressively less so a fading winner is booked green instead of riding to the stop.
+  roi:
+    0: 10.0       # +10% in the first 30 min
+    30: 5.0       # after 30 min, take +5%
+    120: 3.0      # after 2h, take +3%
+    360: 1.5      # after 6h, take any +1.5%
 
 # How open positions are tracked. Checking the 1m candle HIGH/LOW (not just the
 # last price) catches brief intra-minute spikes that would otherwise be missed —
@@ -53,3 +62,13 @@ whale:
   take_profit_pct: 15.0
   stop_loss_pct: 7.0
   max_hold_hours: 12
+  # Whales fade fastest — decay the target hard so you bank the thrust early.
+  roi:
+    0: 15.0       # +15% in the first 20 min
+    20: 7.0       # after 20 min, take +7%
+    60: 4.0       # after 1h, take +4%
+    180: 2.0      # after 3h, take any +2%
+  # Entry-quality filters — fewer but higher-conviction whale rides:
+  ema_period: 20                # only ride a thrust while price is above this EMA (skip downtrend bounces)
+  min_candle_volume_usd: 10000  # the spike candle must move >= this much $ (kills dead-coin noise)
+  max_single_candle_pct: 15     # skip if the latest candle alone jumped >= this % (blow-off top)

@@ -39,9 +39,30 @@ def detect_whale(df: pd.DataFrame, cfg: Config) -> Optional[WhaleSignal]:
         return None
     price_thrust_pct = (close.iloc[-1] - past_price) / past_price * 100
 
-    if volume_ratio >= cfg.whale_volume_multiple and price_thrust_pct >= cfg.whale_price_thrust_pct:
-        return WhaleSignal(
-            volume_ratio=round(volume_ratio, 2),
-            price_thrust_pct=round(price_thrust_pct, 2),
-        )
-    return None
+    if not (volume_ratio >= cfg.whale_volume_multiple and price_thrust_pct >= cfg.whale_price_thrust_pct):
+        return None
+
+    last_close = float(close.iloc[-1])
+
+    # --- Quality filters (raise win rate by refusing low-quality entries) ---
+    # 1) Trend: ride the thrust only if price is above its short EMA. A surge in a
+    #    downtrend is usually a dead-cat bounce / falling knife.
+    ema = close.ewm(span=cfg.whale_ema_period, adjust=False).mean().iloc[-1]
+    if last_close <= ema:
+        return None
+    # 2) Liquidity floor: the spike candle must move real money. A near-zero volume
+    #    baseline makes the ratio explode (the 39x/1481x noise on dead coins).
+    if recent_vol * last_close < cfg.whale_min_candle_volume_usd:
+        return None
+    # 3) No blow-off top: skip if the latest single candle is already parabolic —
+    #    that's buying the exhaustion candle, which reverts hard.
+    prev_close = float(close.iloc[-2])
+    if prev_close > 0 and (last_close - prev_close) / prev_close * 100 >= cfg.whale_max_single_candle_pct:
+        return None
+
+    return WhaleSignal(
+        volume_ratio=round(volume_ratio, 2),
+        price_thrust_pct=round(price_thrust_pct, 2),
+        thrust_close=last_close,
+        as_of=str(df.index[-1]),
+    )

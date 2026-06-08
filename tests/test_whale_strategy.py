@@ -44,3 +44,31 @@ def test_no_whale_without_price_thrust(cfg):
 def test_insufficient_candles_returns_none(cfg):
     df = base_df(n=10)
     assert detect_whale(df, cfg) is None
+
+
+def test_skips_thrust_in_downtrend(cfg):
+    """Volume + thrust qualify, but price is below its EMA (a bounce in a
+    downtrend / falling knife) -> no whale."""
+    df = base_df(n=60, price=200.0)
+    # Collapse to a low base, then a small 3-candle bounce — still far below the EMA.
+    df.loc[df.index[-4]:, "close"] = [100.0, 101.0, 102.0, 105.0]
+    df.loc[df.index[-1], "volume"] = 1_000_000.0 * 5
+    assert detect_whale(df, cfg) is None
+
+
+def test_skips_low_dollar_volume_spike(cfg):
+    """A huge volume RATIO on a micro-priced coin whose spike candle barely moves
+    any real money (the 39x/1481x noise) -> no whale."""
+    df = base_df(n=60, price=0.0001, vol=10.0)
+    df.loc[df.index[-4]:, "close"] = [0.0001, 0.000101, 0.000102, 0.000105]
+    df.loc[df.index[-1], "volume"] = 10.0 * 50  # 50x ratio, but ~$0.05 of volume
+    assert detect_whale(df, cfg) is None
+
+
+def test_skips_blowoff_top(cfg):
+    """Latest single candle is parabolic (>= max_single_candle_pct) -> skip the
+    exhaustion candle."""
+    df = base_df(n=60, price=100.0)
+    df.loc[df.index[-4]:, "close"] = [100.0, 101.0, 102.0, 125.0]  # last candle +22%
+    df.loc[df.index[-1], "volume"] = 1_000_000.0 * 5
+    assert detect_whale(df, cfg) is None

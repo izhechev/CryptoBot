@@ -65,9 +65,28 @@ async def test_stays_open_within_range(tracker, db):
 @pytest.mark.asyncio
 async def test_timeout_closes(tracker, db):
     make_open_position(db, "ADA", 0.5, hours_ago=25)  # standard max hold 24h
-    tracker._gecko.fetch_prices = AsyncMock(return_value={"ADA": 0.51})
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"ADA": 0.5})  # flat: below any ROI rung
     await tracker.run_once()
     assert db.get_all_positions()[0].outcome == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_roi_target_decays_over_time(tracker, db):
+    """+5% wouldn't win a fresh whale (needs +15%), but after 2h the ROI rung has
+    decayed to +4%, so +5% books a win."""
+    make_open_position(db, "PEPE", 100.0, hours_ago=2, strategy="whale")
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"PEPE": 105.0})  # +5%
+    await tracker.run_once()
+    assert db.get_all_positions()[0].outcome == "win"
+
+
+@pytest.mark.asyncio
+async def test_fresh_position_holds_to_full_target(tracker, db):
+    """Same +5% on a fresh whale stays open — the 0-minute rung is +15%."""
+    make_open_position(db, "PEPE", 100.0, hours_ago=0, strategy="whale")
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"PEPE": 105.0})  # +5% < 15%
+    await tracker.run_once()
+    assert len(db.get_open_positions()) == 1
 
 
 @pytest.mark.asyncio

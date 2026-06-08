@@ -52,6 +52,23 @@ class Config:
     # How often the tracker pulls CoinGecko prices and pushes them to the dashboard.
     # One batched call per cycle; keep >=2s to respect CoinGecko's free-tier limit.
     price_feed_seconds: float = 3.0
+    # Whale entry-quality filters (raise win rate):
+    whale_ema_period: int = 20                    # ride a thrust only if price > this EMA
+    whale_min_candle_volume_usd: float = 10000.0  # spike candle must move real $ (kill noise)
+    whale_max_single_candle_pct: float = 15.0     # skip blow-off tops (latest candle this hot)
+    # Time-decaying take-profit (Freqtrade-style minimal_roi): [(minutes, target_pct)]
+    # sorted high->low minutes. Books the early pop before momentum fades.
+    standard_roi: list = field(default_factory=lambda: [(360.0, 1.5), (120.0, 3.0), (30.0, 5.0), (0.0, 10.0)])
+    whale_roi: list = field(default_factory=lambda: [(180.0, 2.0), (60.0, 4.0), (20.0, 7.0), (0.0, 15.0)])
+    max_open_positions: int = 6        # cap correlated concurrent exposure
+    regime_filter: bool = True         # skip NEW entries when BTC is below its 4h trend
+
+
+def _parse_roi(raw: dict | None, default_pct: float) -> list:
+    """Turn a {minutes: target_pct} map into [(minutes, pct)] sorted high->low minutes."""
+    if not raw:
+        return [(0.0, default_pct)]
+    return sorted(((float(k), float(v)) for k, v in raw.items()), key=lambda x: x[0], reverse=True)
 
 
 def load_config(yaml_path: str = "backend/config.yaml") -> Config:
@@ -96,6 +113,13 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         whale_take_profit_pct=float(whale.get("take_profit_pct", 15.0)),
         whale_stop_loss_pct=float(whale.get("stop_loss_pct", 7.0)),
         whale_max_hold_hours=int(whale.get("max_hold_hours", 12)),
+        whale_ema_period=int(whale.get("ema_period", 20)),
+        whale_min_candle_volume_usd=float(whale.get("min_candle_volume_usd", 10000.0)),
+        whale_max_single_candle_pct=float(whale.get("max_single_candle_pct", 15.0)),
+        standard_roi=_parse_roi(pt.get("roi"), float(pt["take_profit_pct"])),
+        whale_roi=_parse_roi(whale.get("roi"), float(whale.get("take_profit_pct", 15.0))),
+        max_open_positions=int(scan.get("max_open_positions", 6)),
+        regime_filter=bool(scan.get("regime_filter", True)),
         tracking_interval_seconds=int(tracking.get("interval_seconds", 60)),
         tracking_timeframe=tracking.get("candle_timeframe", "1m"),
         tracking_candle_limit=int(tracking.get("candle_limit", 60)),

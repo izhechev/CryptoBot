@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from typing import Optional
 from backend.config import Config
@@ -45,6 +46,7 @@ class Scanner:
         self._trader = PaperTrading(cfg, db)
         self._gecko = GeckoClient(cfg.gecko_api_key)
         self._notifier: Notifier | None = None
+        self._allow_entries = True  # set per-scan by the market-regime check
 
     def set_notifier(self, notifier: Notifier) -> None:
         self._notifier = notifier
@@ -54,6 +56,7 @@ class Scanner:
 
     async def run_once(self) -> None:
         logger.info("Scan started")
+        self._allow_entries = await self._market_regime_ok()
         coins = await self._cmc.fetch_all_coins(min_volume_24h=self._cfg.min_volume_24h)
         total = len(coins)
         logger.info("Fetched %d coins from CMC (volume-filtered)", total)
@@ -70,6 +73,26 @@ class Scanner:
 
         self._log_scan_summary(results)
         logger.info("Scan complete")
+
+    async def _market_regime_ok(self) -> bool:
+        """Don't open new longs into a falling market: require BTC above its 4h EMA-50.
+        If BTC data is unavailable, default to allowing entries."""
+        if not self._cfg.regime_filter:
+            return True
+        df = await self._market.fetch_htf_candles("BTC")
+        if df is None or len(df) < 50:
+            return True
+        ema = df["close"].ewm(span=50, adjust=False).mean().iloc[-1]
+        ok = bool(df["close"].iloc[-1] > ema)
+        if not ok:
+            logger.info("Market regime: BTC below 4h EMA-50 — holding off on NEW entries this scan")
+        return ok
+
+    def _can_open(self) -> bool:
+        """Gate every entry on the market regime and the concurrent-position cap."""
+        if not self._allow_entries:
+            return False
+        return len(self._db.get_open_positions()) < self._cfg.max_open_positions
 
     def _log_scan_summary(self, results: list[_CoinResult]) -> None:
         """One INFO summary per scan: counts + closest-to-firing coins. This is the
@@ -152,6 +175,8 @@ class Scanner:
 
         if total_score < self._cfg.signal_threshold:
             return result
+        if not self._can_open():  # regime / max-positions gate
+            return result
 
         # Resolve a trusted (CoinGecko) entry price BEFORE recording the signal, so
         # we never log a signal we can't act on (e.g. a stale/wrong market price).
@@ -202,6 +227,8 @@ class Scanner:
         return gecko_price if (gecko_price and gecko_price > 0) else exchange_price
 
     async def _open_whale(self, coin: CoinListing, whale) -> bool:
+        if not self._can_open():  # regime / max-positions gate
+            return False
         # Resolve a trusted (CoinGecko) price before recording a whale signal, so a
         # stale/frozen or wrong-coin market can't produce a phantom whale ride.
         entry_price = await self._entry_price(coin)
@@ -225,9 +252,23 @@ class Scanner:
 
     async def loop(self) -> None:
         await self.init()
+        interval = self._cfg.scan_interval_minutes * 60
         while True:
+            start = time.monotonic()
             try:
                 await self.run_once()
             except Exception as e:
                 logger.error("Scan cycle failed: %s", e)
-            await asyncio.sleep(self._cfg.scan_interval_minutes * 60)
+            # Pace by scan START, not finish: a scan takes several minutes, so
+            # sleeping the full interval afterwards would stretch the real cadence
+            # (e.g. 10-min scan + 30-min sleep = 40 min). Sleep only the remainder.
+            elapsed = time.monotonic() - start
+            delay = interval - elapsed
+            if delay <= 0:
+                logger.warning(
+                    "Scan took %.0fs (>= %ds interval) — starting next scan immediately",
+                    elapsed, interval,
+                )
+            else:
+                logger.info("Scan cycle done in %.0fs — next scan in %.0fs", elapsed, delay)
+                await asyncio.sleep(delay)

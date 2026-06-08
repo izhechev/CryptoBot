@@ -45,51 +45,31 @@ class PaperTrading:
         )
         return self._db.save_position(pos)
 
-    def check_position(self, pos: Position, current_price: float) -> Optional[TradeOutcome]:
-        """Check exit conditions using strategy-specific TP/SL/timeout. None if held."""
-        take_profit_pct, stop_loss_pct, max_hold_hours = self._exit_params(pos.strategy)
-        pnl_pct = (current_price - pos.entry_price) / pos.entry_price * 100
+    def _roi_target(self, strategy: str, elapsed_min: float) -> float:
+        """Time-decaying take-profit target (%) for how long the trade has been open.
+        Table is [(minutes, pct)] sorted high->low minutes; the first row whose
+        minute-threshold has elapsed applies."""
+        table = self._cfg.whale_roi if strategy == "whale" else self._cfg.standard_roi
+        for minutes, pct in table:
+            if elapsed_min >= minutes:
+                return pct
+        return table[-1][1] if table else 100.0
 
-        if pnl_pct >= take_profit_pct:
-            return TradeOutcome.WIN
-        if pnl_pct <= -stop_loss_pct:
-            return TradeOutcome.LOSS
+    def check_position(self, pos: Position, current_price: float) -> Optional[TradeOutcome]:
+        """Exit on the time-decaying ROI target, the stop-loss, or the max hold."""
+        _, stop_loss_pct, max_hold_hours = self._exit_params(pos.strategy)
+        pnl_pct = (current_price - pos.entry_price) / pos.entry_price * 100
 
         entry_at = pos.entry_at
         if entry_at.tzinfo is None:
             entry_at = entry_at.replace(tzinfo=timezone.utc)
         elapsed = datetime.now(timezone.utc) - entry_at
-        if elapsed >= timedelta(hours=max_hold_hours):
-            return TradeOutcome.TIMEOUT
 
-        return None
-
-    def check_position_range(
-        self,
-        pos: Position,
-        high: float,
-        low: float,
-        current_price: float,
-    ) -> Optional[TradeOutcome]:
-        """
-        Spike-aware exit check using the recent candle's HIGH and LOW, so a brief
-        intra-interval spike that touched the take-profit (or stop) is caught even
-        if it reverted before we polled. Take-profit is checked against the high,
-        stop-loss against the low. None if the position should stay open.
-        """
-        take_profit_pct, stop_loss_pct, max_hold_hours = self._exit_params(pos.strategy)
-        high_pnl = (high - pos.entry_price) / pos.entry_price * 100
-        low_pnl = (low - pos.entry_price) / pos.entry_price * 100
-
-        if high_pnl >= take_profit_pct:
+        if pnl_pct >= self._roi_target(pos.strategy, elapsed.total_seconds() / 60):
             return TradeOutcome.WIN
-        if low_pnl <= -stop_loss_pct:
+        if pnl_pct <= -stop_loss_pct:
             return TradeOutcome.LOSS
-
-        entry_at = pos.entry_at
-        if entry_at.tzinfo is None:
-            entry_at = entry_at.replace(tzinfo=timezone.utc)
-        if datetime.now(timezone.utc) - entry_at >= timedelta(hours=max_hold_hours):
+        if elapsed >= timedelta(hours=max_hold_hours):
             return TradeOutcome.TIMEOUT
         return None
 
@@ -104,12 +84,11 @@ class PaperTrading:
         return datetime.now(timezone.utc) - entry_at >= timedelta(hours=max_hold_hours)
 
     def exit_price_for(self, pos: Position, outcome: TradeOutcome, current_price: float) -> float:
-        """Realistic fill price: target on a win, stop on a loss, market on timeout."""
-        take_profit_pct, stop_loss_pct, _ = self._exit_params(pos.strategy)
-        if outcome == TradeOutcome.WIN:
-            return pos.entry_price * (1 + take_profit_pct / 100)
+        """Fill price. ROI wins and timeouts exit at the polled market price; a stop
+        fills at the stop level (or worse — current price if it gapped past it)."""
+        _, stop_loss_pct, _ = self._exit_params(pos.strategy)
         if outcome == TradeOutcome.LOSS:
-            return pos.entry_price * (1 - stop_loss_pct / 100)
+            return min(current_price, pos.entry_price * (1 - stop_loss_pct / 100))
         return current_price
 
     def record_tick(self, pos: Position, current_price: float) -> None:
