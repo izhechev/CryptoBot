@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import Optional
@@ -6,16 +7,19 @@ import aiohttp
 from google import genai
 from backend.cmc_client import CmcClient
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class NewsResult:
     score: float
     explanation: str
+    analyzed: bool = True  # False = no real news (fallback); caller should ignore the score
 
 
 _CRYPTOCOMPARE_URL = "https://min-api.cryptocompare.com/data/v2/news/"
-_NEUTRAL = NewsResult(score=50.0, explanation="News analysis unavailable.")
-_NO_NEWS = NewsResult(score=50.0, explanation="No recent news found.")
+_NEUTRAL = NewsResult(score=50.0, explanation="News analysis unavailable.", analyzed=False)
+_NO_NEWS = NewsResult(score=50.0, explanation="No recent news found.", analyzed=False)
 _MODEL = "gemini-3.5-flash"
 _PROMPT = """You are a crypto market analyst. Given these news headlines about {name} ({symbol}), \
 judge how bullish or bearish the news is for the coin's price over the next 24 hours.
@@ -64,6 +68,7 @@ class NewsClient:
         one-line explanation. Returns a neutral fallback on any failure.
         """
         if not headlines:
+            logger.debug("  %s: no headlines found — neutral news (Gemini not called)", symbol)
             return _NO_NEWS
         prompt = _PROMPT.format(
             name=name,
@@ -75,9 +80,15 @@ class NewsClient:
             text = (response.text or "").strip()
             text = re.sub(r"```(?:json)?", "", text).strip()
             parsed = json.loads(text)
-            return NewsResult(
+            result = NewsResult(
                 score=float(parsed["score"]),
                 explanation=str(parsed["explanation"]),
             )
-        except Exception:
+            logger.debug("  %s: Gemini news score=%.0f — %s",
+                         symbol, result.score, result.explanation)
+            return result
+        except Exception as e:
+            # Surface the real reason (e.g. an invalid model id 404s here) instead
+            # of silently scoring every coin a neutral 50.
+            logger.warning("  %s: Gemini analysis failed (%s) — neutral fallback", symbol, e)
             return _NEUTRAL

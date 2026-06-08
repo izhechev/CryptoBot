@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import uvicorn
 from backend.config import load_config
 from backend.storage import Storage
@@ -11,6 +12,11 @@ from backend.api import create_app
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+)
+# Per-coin scan detail is DEBUG. Set LOG_LEVEL=DEBUG to see it — scoped to our own
+# loggers so third-party libs (ccxt, httpx, uvicorn) stay quiet at INFO.
+logging.getLogger("backend").setLevel(
+    getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
 )
 logger = logging.getLogger(__name__)
 

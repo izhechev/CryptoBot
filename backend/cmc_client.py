@@ -1,6 +1,9 @@
 import asyncio
+import logging
 from dataclasses import dataclass
 import aiohttp
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -20,6 +23,7 @@ _CONTENT_URL = f"{_BASE}/v1/content/latest"
 class CmcClient:
     def __init__(self, api_key: str):
         self._api_key = api_key
+        self._news_warned = False  # log the paid-plan news 403 only once
 
     def _headers(self) -> dict:
         return {"X-CMC_PRO_API_KEY": self._api_key, "Accept": "application/json"}
@@ -85,8 +89,9 @@ class CmcClient:
 
     async def fetch_news(self, symbol: str, limit: int = 5) -> list[str]:
         """
-        Fetch latest news headlines for a coin from CMC's /v1/content/latest
-        (free tier, 5-min cache). Returns [] on any error.
+        Fetch latest news headlines for a coin from CMC's /v1/content/latest.
+        NOTE: this endpoint requires a PAID CMC plan — on the free Basic plan it
+        returns 403 (error 1006), so news falls back to neutral. Returns [] on error.
         """
         params = {"symbol": symbol, "news_type": "news", "content_type": "news"}
         try:
@@ -96,5 +101,10 @@ class CmcClient:
                     data = await resp.json()
             items = data.get("data", [])
             return [item["title"] for item in items[:limit] if item.get("title")]
-        except Exception:
+        except Exception as e:
+            if not self._news_warned:
+                logger.warning(
+                    "CMC news endpoint unavailable (%s) — news scores will stay neutral. "
+                    "This endpoint needs a paid CMC plan.", e)
+                self._news_warned = True
             return []

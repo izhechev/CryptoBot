@@ -3,6 +3,7 @@ import logging
 from typing import Optional, Callable, Awaitable
 from telegram import Bot
 from backend.config import Config
+from backend.format_utils import fmt_price
 from backend.signals import SignalEvent
 from backend.storage import Position
 
@@ -53,7 +54,7 @@ class Notifier:
         text = (
             f"{header}: <b>{event.coin_symbol}</b>\n"
             f"{detail}\n"
-            f"Entry: ${entry_price:,.6f}"
+            f"Entry: ${fmt_price(entry_price)}"
         )
         await asyncio.gather(
             self._tg(text),
@@ -73,7 +74,7 @@ class Notifier:
         outcome_label = pos.outcome.upper() if pos.outcome else "CLOSED"
         text = (
             f"{emoji} {tag}<b>{outcome_label}: {pos.coin_symbol}</b>\n"
-            f"Entry: ${pos.entry_price:,.6f} → Exit: ${pos.exit_price:,.6f}\n"
+            f"Entry: ${fmt_price(pos.entry_price)} → Exit: ${fmt_price(pos.exit_price)}\n"
             f"P&amp;L: {pos.pnl_pct:+.2f}%"
         )
         await asyncio.gather(
@@ -96,3 +97,9 @@ class Notifier:
             "current_price": current_price,
             "pnl_pct": round(pnl_pct, 4),
         })
+
+    async def send_prices(self, updates: list[dict]) -> None:
+        """One batched frame with every open position's live price, so the dashboard
+        applies them all in a single render (not one coin per message)."""
+        if updates:
+            await self._ws({"type": "prices", "updates": updates})

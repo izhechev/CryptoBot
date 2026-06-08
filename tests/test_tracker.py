@@ -1,5 +1,4 @@
 import pytest
-import pandas as pd
 from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock
 from backend.tracker import Tracker
@@ -20,10 +19,6 @@ def make_open_position(db: Storage, symbol: str, entry_price: float,
     ))
 
 
-def candle(high: float, low: float) -> pd.DataFrame:
-    return pd.DataFrame([{"open": low, "high": high, "low": low, "close": high, "volume": 1.0}])
-
-
 @pytest.fixture
 def db(tmp_path):
     s = Storage(db_path=str(tmp_path / "test.db"))
@@ -34,68 +29,80 @@ def db(tmp_path):
 @pytest.fixture
 def tracker(cfg, db):
     t = Tracker(cfg, db)
-    t._market = AsyncMock()
+    t._gecko = AsyncMock()
     t._notifier = AsyncMock()
     t._notifier.send_position_closed = AsyncMock()
-    t._notifier.send_position_update = AsyncMock()
+    t._notifier.send_prices = AsyncMock()
     return t
 
 
 @pytest.mark.asyncio
-async def test_catches_spike_via_candle_high(tracker, db):
-    """Current price is only +3%, but the 1m candle high touched +10% -> WIN."""
-    make_open_position(db, "SOL", 100.0)
-    tracker._market.fetch_current_price = AsyncMock(return_value=103.0)   # spot +3%
-    tracker._market._fetch = AsyncMock(return_value=candle(high=110.5, low=101.0))  # spiked to +10.5%
-
+async def test_take_profit_win(tracker, db):
+    make_open_position(db, "SOL", 100.0)  # standard TP +10%
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"SOL": 110.0})
     await tracker.run_once()
-
-    closed = db.get_all_positions()
-    assert closed[0].outcome == "win"
-    # Exit booked at the take-profit target, not the reverted spot price.
-    assert closed[0].exit_price == pytest.approx(110.0)
+    closed = db.get_all_positions()[0]
+    assert closed.outcome == "win"
+    assert closed.exit_price == pytest.approx(110.0)  # +10% target
 
 
 @pytest.mark.asyncio
-async def test_stop_loss_via_candle_low(tracker, db):
-    make_open_position(db, "BTC", 100.0)
-    tracker._market.fetch_current_price = AsyncMock(return_value=98.0)
-    tracker._market._fetch = AsyncMock(return_value=candle(high=99.0, low=94.5))  # dipped -5.5%
-
+async def test_stop_loss_closes(tracker, db):
+    make_open_position(db, "BTC", 100.0)  # standard SL -5%
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"BTC": 95.0})
     await tracker.run_once()
-
-    closed = db.get_all_positions()
-    assert closed[0].outcome == "loss"
-    assert closed[0].exit_price == pytest.approx(95.0)
+    assert db.get_all_positions()[0].outcome == "loss"
 
 
 @pytest.mark.asyncio
-async def test_keeps_position_open_within_range(tracker, db):
+async def test_stays_open_within_range(tracker, db):
     make_open_position(db, "ETH", 100.0)
-    tracker._market.fetch_current_price = AsyncMock(return_value=103.0)
-    tracker._market._fetch = AsyncMock(return_value=candle(high=104.0, low=98.0))
-
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"ETH": 103.0})
     await tracker.run_once()
     assert len(db.get_open_positions()) == 1
 
 
 @pytest.mark.asyncio
-async def test_closes_timed_out_position(tracker, db):
-    make_open_position(db, "ADA", 0.5, hours_ago=25)
-    tracker._market.fetch_current_price = AsyncMock(return_value=0.51)
-    tracker._market._fetch = AsyncMock(return_value=candle(high=0.51, low=0.50))
-
+async def test_timeout_closes(tracker, db):
+    make_open_position(db, "ADA", 0.5, hours_ago=25)  # standard max hold 24h
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"ADA": 0.51})
     await tracker.run_once()
-    closed = db.get_all_positions()
-    assert closed[0].outcome == "timeout"
+    assert db.get_all_positions()[0].outcome == "timeout"
 
 
 @pytest.mark.asyncio
 async def test_whale_position_needs_15pct_to_win(tracker, db):
-    """A +12% candle high wins a standard trade but must NOT win a whale trade (+15% TP)."""
-    make_open_position(db, "PEPE", 100.0, strategy="whale")
-    tracker._market.fetch_current_price = AsyncMock(return_value=110.0)
-    tracker._market._fetch = AsyncMock(return_value=candle(high=112.0, low=105.0))
-
+    make_open_position(db, "PEPE", 100.0, strategy="whale")  # whale TP +15%
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"PEPE": 112.0})  # +12% < 15%
     await tracker.run_once()
-    assert len(db.get_open_positions()) == 1  # still open, +12% < +15% whale TP
+    assert len(db.get_open_positions()) == 1
+
+
+@pytest.mark.asyncio
+async def test_no_price_times_out(tracker, db):
+    """No CoinGecko price, but past max-hold -> still closes on the time-based exit."""
+    make_open_position(db, "LIT", 0.743, hours_ago=13, strategy="whale")
+    tracker._gecko.fetch_prices = AsyncMock(return_value={})
+    await tracker.run_once()
+    closed = db.get_all_positions()[0]
+    assert closed.outcome == "timeout"
+    assert closed.exit_price == pytest.approx(0.743)  # flat at entry
+
+
+@pytest.mark.asyncio
+async def test_no_price_recent_stays_open(tracker, db):
+    make_open_position(db, "LIT", 0.743, hours_ago=1, strategy="whale")
+    tracker._gecko.fetch_prices = AsyncMock(return_value={})
+    await tracker.run_once()
+    assert len(db.get_open_positions()) == 1
+
+
+@pytest.mark.asyncio
+async def test_broadcasts_live_prices(tracker, db):
+    make_open_position(db, "ETH", 100.0)
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"ETH": 103.0})
+    await tracker.run_once()
+    tracker._notifier.send_prices.assert_called_once()
+    updates = tracker._notifier.send_prices.call_args[0][0]
+    assert updates[0]["current_price"] == 103.0
+    assert updates[0]["pnl_pct"] == pytest.approx(3.0)

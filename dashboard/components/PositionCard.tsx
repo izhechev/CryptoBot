@@ -6,8 +6,12 @@ const WHALE_HOLD_H = 12;
 const STD_HOLD_H = 24;
 
 function fmtPrice(p: number) {
+  if (p <= 0) return "0";
   if (p >= 1) return p.toLocaleString("en-US", { maximumFractionDigits: 2 });
-  return p.toPrecision(4);
+  // sub-dollar: show ~4 significant decimals so micro-priced coins (e.g. SATS at
+  // ~0.0000003) render as 0.0000003, not scientific notation or $0.000000.
+  const decimals = 3 - Math.floor(Math.log10(p));
+  return p.toFixed(decimals).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 export function PositionCard({ position, live }: { position: Position; live: LiveUpdate }) {
@@ -40,6 +44,9 @@ export function PositionCard({ position, live }: { position: Position; live: Liv
           <span className="text-base font-bold font-display tracking-wide text-[var(--text)]">
             {position.coin_symbol}
           </span>
+          {position.coin_name && position.coin_name.toLowerCase() !== position.coin_symbol.toLowerCase() && (
+            <span className="text-[11px] text-[var(--muted)] truncate max-w-[140px]">{position.coin_name}</span>
+          )}
           {whale && <span className="text-[11px]">🐋</span>}
         </div>
         <span className="text-lg font-bold tnum" style={{ color: pnlColor }}>

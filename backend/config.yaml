@@ -1,7 +1,10 @@
 # backend/config.yaml
 scan:
   interval_minutes: 30
-  exchange: binance
+  # Candle/price sources, tried in order. A coin is routed to the first exchange
+  # that lists it as a LIVE spot market, so coins not on Binance are still covered
+  # and delisted/frozen markets (e.g. spot LIT/USDT) are skipped.
+  exchanges: [binance, kucoin, kraken]
   candle_timeframe: "15m"        # entry / signal timeframe
   candle_limit: 200
   htf_timeframe: "4h"            # higher timeframe for trend confluence filter
@@ -10,6 +13,7 @@ scan:
 scoring:
   pre_filter_threshold: 55       # min technical score before fetching news + calling Gemini
   signal_threshold: 75           # min total score to fire a MUST-BUY signal
+  max_price_divergence_pct: 8    # reject if exchange price is >8% off CMC's price (stale/wrong coin)
   technical_weight: 0.65
   news_weight: 0.35
   min_volume_24h: 1000000        # CMC server-side filter: skip illiquid coins
@@ -31,7 +35,10 @@ paper_trading:
 # last price) catches brief intra-minute spikes that would otherwise be missed —
 # e.g. a coin that touches +10% for only a minute still books the win.
 tracking:
-  interval_seconds: 60          # how often to poll open positions
+  # The tracker prices positions from CoinGecko (trusted/displayed price) and checks
+  # TP/SL/timeout each cycle. One batched CoinGecko call per cycle — keep >=2s to
+  # stay under CoinGecko's free-tier rate limit (raise if you see 429 warnings).
+  price_feed_seconds: 3
   candle_timeframe: "1m"        # timeframe whose high/low is scanned for TP/SL touches
   candle_limit: 60
 

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 export type WsMessage =
   | { type: "signal_fired"; strategy: string; coin: string; score: number; explanation: string; entry_price: number }
   | { type: "position_updated"; id: number; strategy: string; coin: string; current_price: number; pnl_pct: number }
+  | { type: "prices"; updates: { id: number; current_price: number; pnl_pct: number }[] }
   | { type: "position_closed"; strategy: string; coin: string; outcome: string; pnl_pct: number }
   | { type: "scan_started" }
   | { type: "scan_completed" };

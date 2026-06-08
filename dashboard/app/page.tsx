@@ -61,6 +61,13 @@ export default function Dashboard() {
       refresh();
     } else if (latest.type === "position_updated") {
       setLive((prev) => ({ ...prev, [latest.id]: { current_price: latest.current_price, pnl_pct: latest.pnl_pct } }));
+    } else if (latest.type === "prices") {
+      // Batched feed: apply every position's price in one render so they all move together.
+      setLive((prev) => {
+        const next = { ...prev };
+        for (const u of latest.updates) next[u.id] = { current_price: u.current_price, pnl_pct: u.pnl_pct };
+        return next;
+      });
     }
   }, [messages, refresh]);
 

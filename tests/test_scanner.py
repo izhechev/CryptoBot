@@ -34,6 +34,9 @@ def scanner(cfg, db):
         s = Scanner(cfg, db)
     s._cmc = AsyncMock()
     s._market = AsyncMock()
+    s._market.exchange_id_for = MagicMock(return_value="binance")  # sync method
+    s._gecko = AsyncMock()
+    s._gecko.fetch_price = AsyncMock(return_value=None)  # fall back to CMC price
     s._news = MagicMock()
     s._notifier = AsyncMock()
     s._notifier.send_signal_alert = AsyncMock()
@@ -79,6 +82,55 @@ async def test_scan_skips_coin_below_pre_filter(scanner, db):
 
     scanner._news.fetch_headlines.assert_not_called()
     assert len(db.get_recent_signals()) == 0
+
+
+@pytest.mark.asyncio
+async def test_standard_fires_on_technicals_when_no_news(scanner, db):
+    """With no real news (analyzed=False), a strong-tech coin should still fire a
+    standard signal on technicals alone — not be suppressed by a neutral-50 blend."""
+    scanner._cmc.fetch_all_coins = AsyncMock(return_value=[
+        CoinListing(symbol="SOL", name="Solana", price=150.0, volume_24h=5e9, change_24h=5.0)
+    ])
+    scanner._market.fetch_candles = AsyncMock(return_value=make_candle_df())
+    scanner._market.fetch_htf_candles = AsyncMock(return_value=make_candle_df(100))
+    scanner._market.fetch_current_price = AsyncMock(return_value=150.0)
+    scanner._news.fetch_headlines = AsyncMock(return_value=[])
+    scanner._news.analyze_sentiment.return_value = NewsResult(
+        score=50.0, explanation="No recent news found.", analyzed=False)
+
+    with patch("backend.scanner.compute_indicators",
+               return_value=IndicatorScores(30.0, 20.0, 15.0, 15.0, 20.0, True, 80.0)), \
+         patch("backend.scanner.detect_whale", return_value=None):
+        await scanner.run_once()
+
+    signals = db.get_recent_signals()
+    assert len(signals) == 1
+    assert signals[0].coin_symbol == "SOL"
+    assert signals[0].strategy == "standard"
+    assert signals[0].total_score == 80.0  # technicals alone, news ignored
+
+
+@pytest.mark.asyncio
+async def test_scan_skips_when_price_diverges_from_cmc(scanner, db):
+    """High-scoring coin, but exchange price is wildly off CMC's price (stale market
+    or wrong coin sharing the ticker) -> no position opened."""
+    scanner._cmc.fetch_all_coins = AsyncMock(return_value=[
+        CoinListing(symbol="LIT", name="Lighter", price=1.37, volume_24h=4e7, change_24h=-4.0)
+    ])
+    scanner._market.fetch_candles = AsyncMock(return_value=make_candle_df())
+    scanner._market.fetch_htf_candles = AsyncMock(return_value=make_candle_df(100))
+    scanner._market.fetch_current_price = AsyncMock(return_value=0.743)  # frozen/wrong market
+    scanner._news.fetch_headlines = AsyncMock(return_value=["news"])
+    scanner._news.analyze_sentiment.return_value = NewsResult(score=100.0, explanation="bull")
+
+    with patch("backend.scanner.compute_indicators",
+               return_value=IndicatorScores(30.0, 20.0, 15.0, 15.0, 20.0, True, 100.0)), \
+         patch("backend.scanner.compute_total_score", return_value=100.0), \
+         patch("backend.scanner.detect_whale", return_value=None):
+        await scanner.run_once()
+
+    assert len(db.get_recent_signals()) == 0
+    assert not db.has_open_position("LIT", strategy="standard")
 
 
 @pytest.mark.asyncio

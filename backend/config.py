@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 import yaml
 from dotenv import load_dotenv
@@ -42,6 +42,16 @@ class Config:
     gemini_api_key: str
     telegram_bot_token: str
     telegram_chat_id: str
+    # Candle/price sources, tried in order — first exchange that lists a coin as a
+    # live spot market wins. Lets the bot trade coins that aren't on Binance.
+    exchanges: list[str] = field(default_factory=lambda: ["binance"])
+    # Reject an exchange price that is more than this % away from the reference
+    # price — guards against frozen markets and ticker collisions (wrong coin).
+    max_price_divergence_pct: float = 8.0
+    gecko_api_key: str = ""
+    # How often the tracker pulls CoinGecko prices and pushes them to the dashboard.
+    # One batched call per cycle; keep >=2s to respect CoinGecko's free-tier limit.
+    price_feed_seconds: float = 3.0
 
 
 def load_config(yaml_path: str = "backend/config.yaml") -> Config:
@@ -57,7 +67,9 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
 
     return Config(
         scan_interval_minutes=scan["interval_minutes"],
-        exchange=scan["exchange"],
+        exchange=scan.get("exchange", "binance"),
+        exchanges=scan.get("exchanges") or [scan.get("exchange", "binance")],
+        max_price_divergence_pct=float(scoring.get("max_price_divergence_pct", 8.0)),
         candle_timeframe=scan["candle_timeframe"],
         candle_limit=scan["candle_limit"],
         htf_timeframe=scan["htf_timeframe"],
@@ -87,8 +99,10 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         tracking_interval_seconds=int(tracking.get("interval_seconds", 60)),
         tracking_timeframe=tracking.get("candle_timeframe", "1m"),
         tracking_candle_limit=int(tracking.get("candle_limit", 60)),
+        price_feed_seconds=float(tracking.get("price_feed_seconds", 1.0)),
         cmc_api_key=os.environ.get("CMC_API_KEY", ""),
         gemini_api_key=os.environ.get("GEMINI_API_KEY", ""),
         telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
+        gecko_api_key=os.environ.get("COIN_GECKO_API_KEY", ""),
     )

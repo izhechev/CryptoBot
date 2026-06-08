@@ -8,6 +8,8 @@ from backend.config import Config
 class WhaleSignal:
     volume_ratio: float        # latest candle volume / recent average
     price_thrust_pct: float    # % price move over the thrust lookback window
+    thrust_close: float = 0.0  # price the thrust was measured at (candle close)
+    as_of: str = ""            # timestamp of that candle — to gauge data age
 
 
 _MIN_CANDLES = 20

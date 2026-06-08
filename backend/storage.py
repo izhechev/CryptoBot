@@ -29,6 +29,10 @@ class Position:
     outcome: Optional[str]
     pnl_pct: Optional[float]
     strategy: str = "standard"
+    # Exchange the position was opened on, so the tracker prices it on the SAME
+    # market — never entry-on-binance / exit-on-kucoin. None = legacy / use routing.
+    exchange: Optional[str] = None
+    coin_name: str = ""  # full name (e.g. "Sonic SVM") for display alongside the ticker
 
 
 @dataclass
@@ -77,6 +81,7 @@ def _position_from_row(r) -> Position:
         entry_price=r["entry_price"], entry_at=_dt(r["entry_at"]),
         exit_price=r["exit_price"], exit_at=_dt(r["exit_at"]),
         outcome=r["outcome"], pnl_pct=r["pnl_pct"], strategy=r["strategy"],
+        exchange=r["exchange"], coin_name=(r["coin_name"] or ""),
     )
 
 
@@ -113,7 +118,9 @@ class Storage:
                     exit_at TEXT,
                     outcome TEXT,
                     pnl_pct REAL,
-                    strategy TEXT NOT NULL DEFAULT 'standard'
+                    strategy TEXT NOT NULL DEFAULT 'standard',
+                    exchange TEXT,
+                    coin_name TEXT
                 );
                 CREATE TABLE IF NOT EXISTS price_ticks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -131,6 +138,12 @@ class Storage:
                     flagged INTEGER NOT NULL DEFAULT 0
                 );
             """)
+            # Migration: add positions.exchange to DBs created before it existed.
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(positions)").fetchall()]
+            if "exchange" not in cols:
+                conn.execute("ALTER TABLE positions ADD COLUMN exchange TEXT")
+            if "coin_name" not in cols:
+                conn.execute("ALTER TABLE positions ADD COLUMN coin_name TEXT")
 
     def save_signal(self, sig: Signal) -> Signal:
         with self._conn() as conn:
@@ -158,9 +171,11 @@ class Storage:
         with self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO positions (signal_id, coin_symbol, entry_price, entry_at, "
-                "exit_price, exit_at, outcome, pnl_pct, strategy) VALUES (?,?,?,?,?,?,?,?,?)",
+                "exit_price, exit_at, outcome, pnl_pct, strategy, exchange, coin_name) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (pos.signal_id, pos.coin_symbol, pos.entry_price, _dts(pos.entry_at),
-                 pos.exit_price, _dts(pos.exit_at), pos.outcome, pos.pnl_pct, pos.strategy),
+                 pos.exit_price, _dts(pos.exit_at), pos.outcome, pos.pnl_pct, pos.strategy,
+                 pos.exchange, pos.coin_name),
             )
             return Position(**{**pos.__dict__, "id": cur.lastrowid})
 

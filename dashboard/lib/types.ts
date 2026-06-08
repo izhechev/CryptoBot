@@ -14,6 +14,7 @@ export interface Position {
   id: number;
   signal_id: number;
   coin_symbol: string;
+  coin_name: string;
   entry_price: number;
   entry_at: string;
   exit_price: number | null;

@@ -27,7 +27,8 @@ class PaperTrading:
                 self._cfg.stop_loss_pct,
                 self._cfg.max_hold_hours)
 
-    def open_position(self, event: SignalEvent, entry_price: float) -> Position:
+    def open_position(self, event: SignalEvent, entry_price: float,
+                      exchange: Optional[str] = None) -> Position:
         pos = Position(
             id=None,
             signal_id=event.signal_id,
@@ -39,6 +40,8 @@ class PaperTrading:
             outcome=None,
             pnl_pct=None,
             strategy=event.strategy,
+            exchange=exchange,
+            coin_name=event.coin_name,
         )
         return self._db.save_position(pos)
 
@@ -89,6 +92,16 @@ class PaperTrading:
         if datetime.now(timezone.utc) - entry_at >= timedelta(hours=max_hold_hours):
             return TradeOutcome.TIMEOUT
         return None
+
+    def check_timeout(self, pos: Position) -> bool:
+        """Pure time-based exit: True once max-hold has elapsed. Used when no live
+        price is available (e.g. a delisted market) so a position can't get stuck
+        open forever — TP/SL can't be evaluated, but the clock still runs."""
+        _, _, max_hold_hours = self._exit_params(pos.strategy)
+        entry_at = pos.entry_at
+        if entry_at.tzinfo is None:
+            entry_at = entry_at.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) - entry_at >= timedelta(hours=max_hold_hours)
 
     def exit_price_for(self, pos: Position, outcome: TradeOutcome, current_price: float) -> float:
         """Realistic fill price: target on a win, stop on a loss, market on timeout."""
