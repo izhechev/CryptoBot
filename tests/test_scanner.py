@@ -85,6 +85,25 @@ async def test_no_entry_when_regime_bearish(scanner, db):
 
 
 @pytest.mark.asyncio
+async def test_whale_bypasses_bearish_regime(scanner, db):
+    """BTC below trend blocks spot, but a whale still opens (bypass_regime)."""
+    scanner._market_regime_ok = AsyncMock(return_value=False)
+    scanner._cmc.fetch_all_coins = AsyncMock(return_value=[
+        CoinListing(symbol="PEPE", name="Pepe", price=0.0000012, volume_24h=2e8, change_24h=20.0)
+    ])
+    scanner._market.fetch_candles = AsyncMock(return_value=make_candle_df())
+    scanner._market.fetch_htf_candles = AsyncMock(return_value=make_candle_df(100))
+    scanner._market.fetch_current_price = AsyncMock(return_value=0.0000012)
+    with patch("backend.scanner.detect_whale",
+               return_value=WhaleSignal(volume_ratio=5.0, price_thrust_pct=4.5)), \
+         patch("backend.scanner.compute_indicators",
+               return_value=IndicatorScores(0.0, 0.0, 0.0, 0.0, 0.0, False, 10.0)):
+        await scanner.run_once()
+    whales = [s for s in db.get_recent_signals() if s.strategy == "whale"]
+    assert len(whales) == 1  # opened despite bearish BTC regime
+
+
+@pytest.mark.asyncio
 async def test_no_entry_when_at_max_positions(scanner, db):
     """Concurrent-position cap reached -> no new entries."""
     scanner._cfg.max_open_positions = 0

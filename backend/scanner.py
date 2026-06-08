@@ -88,9 +88,10 @@ class Scanner:
             logger.info("Market regime: BTC below 4h EMA-50 — holding off on NEW entries this scan")
         return ok
 
-    def _can_open(self) -> bool:
-        """Gate every entry on the market regime and the concurrent-position cap."""
-        if not self._allow_entries:
+    def _can_open(self, respect_regime: bool = True) -> bool:
+        """Gate an entry on the concurrent-position cap, and — for regime-respecting
+        strategies — on the market regime. Whales can opt out of the regime check."""
+        if respect_regime and not self._allow_entries:
             return False
         return len(self._db.get_open_positions()) < self._cfg.max_open_positions
 
@@ -227,7 +228,9 @@ class Scanner:
         return gecko_price if (gecko_price and gecko_price > 0) else exchange_price
 
     async def _open_whale(self, coin: CoinListing, whale) -> bool:
-        if not self._can_open():  # regime / max-positions gate
+        # Whales can bypass the (multi-day) BTC regime gate — they're short-hold and
+        # already require the coin itself to be in an uptrend. Still respect the cap.
+        if not self._can_open(respect_regime=not self._cfg.whale_bypass_regime):
             return False
         # Resolve a trusted (CoinGecko) price before recording a whale signal, so a
         # stale/frozen or wrong-coin market can't produce a phantom whale ride.

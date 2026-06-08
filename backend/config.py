@@ -62,6 +62,7 @@ class Config:
     whale_roi: list = field(default_factory=lambda: [(180.0, 2.0), (60.0, 4.0), (20.0, 7.0), (0.0, 15.0)])
     max_open_positions: int = 6        # cap correlated concurrent exposure
     regime_filter: bool = True         # skip NEW entries when BTC is below its 4h trend
+    whale_bypass_regime: bool = True   # whales (short, self-trend-filtered) trade in any market
 
 
 def _parse_roi(raw: dict | None, default_pct: float) -> list:
@@ -120,6 +121,7 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         whale_roi=_parse_roi(whale.get("roi"), float(whale.get("take_profit_pct", 15.0))),
         max_open_positions=int(scan.get("max_open_positions", 6)),
         regime_filter=bool(scan.get("regime_filter", True)),
+        whale_bypass_regime=bool(whale.get("bypass_regime", True)),
         tracking_interval_seconds=int(tracking.get("interval_seconds", 60)),
         tracking_timeframe=tracking.get("candle_timeframe", "1m"),
         tracking_candle_limit=int(tracking.get("candle_limit", 60)),
