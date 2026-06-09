@@ -42,7 +42,8 @@ exits:
   atr_trail_multiplier: 1.5     # trailing give-back = 1.5 x ATR%
   trail_pct_min: 2.0
   trail_pct_max: 6.0
-  trail_arm_pct: 6.0            # arm the trail once the trade has peaked past this
+  trail_arm_pct: 4.0            # arm the trail once the trade has peaked past this
+                                # (sweep: 4.0 edged 6.0/8.0 at every volume floor)
   # Re-entry cooldowns: don't re-buy the same coin right after a close — with the
   # windowed whale detection, the spike that just stopped out is still detectable.
   loss_cooldown_hours: 4
@@ -77,9 +78,10 @@ tracking:
 # strategy with its own positions, exits, and win/loss stats.
 whale:
   enabled: true
-  bypass_regime: true           # whales trade even when BTC is below its 4h trend (daily action; spot still gated)
-  volume_multiple: 4.0          # spike volume >= 4x its average (follow-through confirmation now
-                                # handles fakes; v1's losing faders were 3.4-3.9x, so 4x stays above)
+  bypass_regime: false          # SWEEP VERDICT (21d, 47 coins, 54 combos): every bypass=true
+                                # variant lost 0.5-1.1%/trade; regime-obedient whales were the
+                                # only near-breakeven config. Flip back to true for action-over-EV.
+  volume_multiple: 5.0          # 5x beat 4x and 3x in every sweep pairing
   price_thrust_pct: 3.0         # price up >= 3% over the thrust lookback
   max_thrust_pct: 18            # reject if thrust >= this % over the lookback (blow-off top: DEGO/RAD)
   thrust_lookback: 3            # number of candles for the price-thrust window
