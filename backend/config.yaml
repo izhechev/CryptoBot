@@ -88,10 +88,12 @@ book:
 # strategy with its own positions, exits, and win/loss stats.
 whale:
   enabled: true
-  bypass_regime: false          # SWEEP VERDICT (21d, 47 coins, 54 combos): every bypass=true
-                                # variant lost 0.5-1.1%/trade; regime-obedient whales were the
-                                # only near-breakeven config. Flip back to true for action-over-EV.
-  volume_multiple: 5.0          # 5x beat 4x and 3x in every sweep pairing
+  bypass_regime: true           # LIQUID-UNIVERSE SWEEP: on >=$10M/day coins, bear-market
+                                # whales measured +0.93%/trade (31 trades, 74% win) — the
+                                # earlier "obey regime" verdict was a thin-coin result.
+  min_coin_volume_24h: 10000000 # whales only ride coins with >=$10M daily volume (10/12
+                                # combos green there; thin mid-caps lose to slippage)
+  volume_multiple: 3.0          # on liquid coins the 3x floor measured best (spikes are real)
   entry_mode: retest            # SWEEP v2: retest+obedient+5x was the ONLY green whale
                                 # config (100% win, +2.0%/trade net; n=4 — thin sample).
                                 # "chase" = old buy-at-market behavior.

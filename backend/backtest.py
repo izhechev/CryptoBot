@@ -95,17 +95,36 @@ def _exit_levels(cfg: Config, df: pd.DataFrame) -> tuple[float, float]:
 def simulate_exit(cfg: Config, df: pd.DataFrame, entry_idx: int, entry_price: float,
                   strategy: str, stop_pct: float, trail_pct: float) -> tuple[int, float, str]:
     """Walk candles from entry_idx forward applying the live exit rules.
-    Returns (exit_idx, exit_price, outcome)."""
+    Returns (exit_idx, exit_price, outcome). With scale_out enabled, the returned
+    exit price is SYNTHETIC: entry * (1 + blended_pnl) across both halves."""
     max_hold_min = (cfg.whale_max_hold_hours if strategy == "whale"
                     else cfg.max_hold_hours) * 60
     stop_level = entry_price * (1 - stop_pct / 100)
     peak = entry_price
+    scale_price: Optional[float] = None
+    f = cfg.scale_out_fraction
+
+    def blended(runner_exit: float) -> float:
+        """Synthetic exit price combining the scaled half and the runner half."""
+        pnl = (f * (scale_price - entry_price) + (1 - f) * (runner_exit - entry_price)) / entry_price
+        return entry_price * (1 + pnl)
 
     for i in range(entry_idx, len(df)):
         high = float(df["high"].iloc[i])
         low = float(df["low"].iloc[i])
         close = float(df["close"].iloc[i])
         elapsed_min = (i - entry_idx) * 15
+
+        if scale_price is not None:
+            # Runner half: stop sits at breakeven; trail follows the peak.
+            exit_level = max(entry_price, peak * (1 - trail_pct / 100))
+            if low <= exit_level:
+                price = blended(exit_level)
+                return i, price, "win" if price > entry_price else "loss"
+            if elapsed_min >= max_hold_min:
+                return i, blended(close), "timeout"
+            peak = max(peak, high)
+            continue
 
         armed = (peak - entry_price) / entry_price * 100 >= cfg.trail_arm_pct
 
@@ -122,7 +141,10 @@ def simulate_exit(cfg: Config, df: pd.DataFrame, entry_idx: int, entry_price: fl
         else:
             target = entry_price * (1 + roi_target(cfg, strategy, elapsed_min) / 100)
             if high >= target:
-                return i, target, "win"
+                if cfg.scale_out_enabled:
+                    scale_price = target  # bank half, runner continues at breakeven stop
+                else:
+                    return i, target, "win"
         # 4) max-hold timeout at the close
         if elapsed_min >= max_hold_min:
             return i, close, "timeout"
@@ -131,7 +153,8 @@ def simulate_exit(cfg: Config, df: pd.DataFrame, entry_idx: int, entry_price: fl
         peak = max(peak, high)
 
     last = len(df) - 1
-    return last, float(df["close"].iloc[last]), "timeout"
+    last_close = float(df["close"].iloc[last])
+    return last, (blended(last_close) if scale_price is not None else last_close), "timeout"
 
 
 def _htf(df: pd.DataFrame) -> pd.DataFrame:
@@ -331,6 +354,7 @@ _SWEEP_GRID = {
     "whale_entry_mode": ["chase", "retest"],
     "whale_bypass_regime": [True, False],
     "whale_volume_multiple": [3.0, 4.0, 5.0],
+    "scale_out_enabled": [False, True],
 }
 
 # Spot sweep: entry bars + exit shape. Indicator scores are precomputed once per
@@ -340,6 +364,7 @@ _SPOT_SWEEP_GRID = {
     "bear_signal_threshold": [75.0, 80.0, 85.0],
     "trail_arm_pct": [4.0, 6.0],
     "atr_stop_multiplier": [1.5, 2.5],
+    "scale_out_enabled": [False, True],
 }
 
 

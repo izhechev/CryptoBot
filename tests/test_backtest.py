@@ -196,3 +196,40 @@ def test_spot_scores_respect_scan_range(cfg):
                                      scan_start=_WARMUP + 20) == []
     assert len(simulate_spot_from_scores(cfg, "X", df, scores,
                                          scan_end=_WARMUP + 20)) == 1
+
+
+def test_scale_out_blends_both_halves(cfg):
+    """Scale-out: half banked at the +15% target, runner trails from a 120 peak and
+    exits at 115.2 -> blended exit ~ +15.1%."""
+    from dataclasses import replace
+    c = replace(cfg, scale_out_enabled=True, scale_out_fraction=0.5)
+    df = candles(20)
+    df.iloc[0, df.columns.get_loc("high")] = 116.0   # touch +15% -> scale half (peak 116)
+    df.iloc[1, df.columns.get_loc("high")] = 120.0   # runner peaks higher
+    df.iloc[1, df.columns.get_loc("low")] = 112.0    # stays above 116*0.96 trail
+    df.iloc[2, df.columns.get_loc("low")] = 110.0    # below 120*0.96 -> runner out at 115.2
+    idx, price, outcome = simulate_exit(c, df, 0, 100.0, "whale", 8.0, 4.0)
+    assert outcome == "win"
+    assert price == pytest.approx(0.5 * 115.0 + 0.5 * 115.2, abs=0.05)
+
+
+def test_scale_out_runner_breakeven_protects(cfg):
+    """After scaling, a full reversal exits the runner at breakeven — the trade
+    still books the banked half instead of a loss."""
+    from dataclasses import replace
+    c = replace(cfg, scale_out_enabled=True, scale_out_fraction=0.5)
+    df = candles(20)
+    df.iloc[0, df.columns.get_loc("high")] = 116.0   # scale at 115
+    df.iloc[1, df.columns.get_loc("low")] = 90.0     # crash -> runner out at breakeven 100
+    # wide trail (15%) so the breakeven floor binds, not the trail
+    idx, price, outcome = simulate_exit(c, df, 0, 100.0, "whale", 8.0, 15.0)
+    assert outcome == "win"
+    assert price == pytest.approx(107.5)  # 0.5*115 + 0.5*100
+
+
+def test_scale_out_disabled_books_full_win(cfg):
+    """Default (disabled): the original full-position ROI exit is unchanged."""
+    df = candles(20)
+    df.iloc[0, df.columns.get_loc("high")] = 116.0
+    idx, price, outcome = simulate_exit(cfg, df, 0, 100.0, "whale", 8.0, 4.0)
+    assert price == pytest.approx(115.0)

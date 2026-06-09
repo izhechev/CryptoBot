@@ -100,6 +100,15 @@ class Config:
     book_gate: bool = True
     max_spread_pct: float = 1.5           # skip if bid-ask spread is wider than this
     min_bid_ask_ratio: float = 0.75       # skip if bid depth / ask depth is below this
+    # Scale-out (BACKTEST-TESTED option; research says it usually LOWERS total
+    # profit, so it must earn its place in a sweep before going live): at the first
+    # ROI target, sell `fraction`, move the stop to breakeven, trail the rest.
+    scale_out_enabled: bool = False
+    scale_out_fraction: float = 0.5
+    # Whale coin-liquidity floor: the liquid-universe sweep flipped whales net
+    # positive (10/12 combos green at >=$10M/day) while thin mid-caps lose to
+    # slippage — whales only ride coins this liquid.
+    whale_min_coin_volume_24h: float = 10_000_000.0
 
 
 def _parse_roi(raw: dict | None, default_pct: float) -> list:
@@ -181,6 +190,9 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         book_gate=bool(book.get("enabled", True)),
         max_spread_pct=float(book.get("max_spread_pct", 1.5)),
         min_bid_ask_ratio=float(book.get("min_bid_ask_ratio", 0.75)),
+        scale_out_enabled=bool(exits.get("scale_out", False)),
+        scale_out_fraction=float(exits.get("scale_fraction", 0.5)),
+        whale_min_coin_volume_24h=float(whale.get("min_coin_volume_24h", 10_000_000.0)),
         tracking_interval_seconds=int(tracking.get("interval_seconds", 60)),
         tracking_timeframe=tracking.get("candle_timeframe", "1m"),
         tracking_candle_limit=int(tracking.get("candle_limit", 60)),

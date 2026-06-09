@@ -337,3 +337,21 @@ async def test_book_gate_fails_open_when_unreadable(scanner, db):
         await scanner.run_once()
     # retest mode is default config in tests? conftest uses chase -> opens position
     assert db.has_open_position("PEPE", strategy="whale") or len(db.get_pending_orders()) == 1
+
+
+@pytest.mark.asyncio
+async def test_whale_requires_liquid_coin(scanner, db):
+    """Whales only ride coins with >= min_coin_volume_24h daily volume — thin
+    coins measured net negative (slippage exceeds the edge)."""
+    scanner._cmc.fetch_all_coins = AsyncMock(return_value=[
+        CoinListing(symbol="THIN", name="Thin", price=0.01, volume_24h=200_000, change_24h=5.0)
+    ])
+    scanner._market.fetch_candles = AsyncMock(return_value=make_candle_df())
+    scanner._market.fetch_htf_candles = AsyncMock(return_value=make_candle_df(100))
+    scanner._market.fetch_current_price = AsyncMock(return_value=0.01)
+    with patch("backend.scanner.detect_whale", return_value=WhaleSignal(5.0, 4.5)), \
+         patch("backend.scanner.compute_indicators",
+               return_value=IndicatorScores(0.0, 0.0, 0.0, 0.0, 0.0, False, 10.0)):
+        await scanner.run_once()
+    assert not db.has_open_position("THIN", strategy="whale")
+    assert db.get_pending_orders() == []

@@ -303,6 +303,10 @@ class Scanner:
         # already require the coin itself to be in an uptrend. Still respect the cap.
         if not self._can_open(respect_regime=not self._cfg.whale_bypass_regime):
             return False
+        # Liquidity floor: whales measured net NEGATIVE on thin coins (slippage >
+        # edge) and net positive on liquid ones — only ride coins this liquid.
+        if coin.volume_24h < self._cfg.whale_min_coin_volume_24h:
+            return False
         if self._in_cooldown(coin.symbol):
             return False
         if not await self._book_ok(coin):  # cheap, before gecko/Gemini calls
