@@ -147,7 +147,8 @@ def simulate_coin(cfg: Config, symbol: str, df: pd.DataFrame,
         bullish = _regime_at(regime, ts) if regime is not None else True
 
         candidates: list[str] = []
-        if strategies in ("both", "whale") and i >= busy_until["whale"]:
+        if (strategies in ("both", "whale") and i >= busy_until["whale"]
+                and (bullish or cfg.whale_bypass_regime)):
             if detect_whale(window, cfg) is not None:
                 candidates.append("whale")
         if strategies in ("both", "spot") and i >= busy_until["standard"]:
@@ -279,8 +280,10 @@ def _report(trades: list[SimTrade], costs: bool) -> None:
               f"worst: {worst.symbol} {worst.pnl_pct:+.1f}% ({worst.held_min:.0f}m)")
 
 
-# Sweep grid: the whale parameters the v1 data implicated, tested combinatorially.
+# Sweep grid: the whale parameters the data implicated, tested combinatorially —
+# including whether whales should respect the BTC regime at all.
 _SWEEP_GRID = {
+    "whale_bypass_regime": [True, False],
     "whale_volume_multiple": [3.0, 4.0, 5.0],
     "trail_arm_pct": [4.0, 6.0, 8.0],
     "atr_stop_multiplier": [1.5, 2.0, 2.5],
@@ -308,9 +311,9 @@ def run_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
         net = statistics.mean(t.pnl_pct - cost for t in trades)
         rows.append((combo, len(trades), wins / len(trades) * 100, net))
     rows.sort(key=lambda r: r[3], reverse=True)
-    print(f"\n{'vol_mult':>8} {'trail_arm':>9} {'atr_stop':>8} | {'trades':>6} {'win%':>5} {'net_exp':>8}")
+    print(f"\n{'bypass':>6} {'vol_mult':>8} {'trail_arm':>9} {'atr_stop':>8} | {'trades':>6} {'win%':>5} {'net_exp':>8}")
     for combo, n, wr, net in rows:
-        print(f"{combo[0]:>8} {combo[1]:>9} {combo[2]:>8} | {n:>6} {wr:>4.0f}% {net:>+7.2f}%")
+        print(f"{str(combo[0]):>6} {combo[1]:>8} {combo[2]:>9} {combo[3]:>8} | {n:>6} {wr:>4.0f}% {net:>+7.2f}%")
     print("\n(net_exp = average net P&L per trade after fees+slippage; higher is better)")
 
 
