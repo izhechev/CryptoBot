@@ -9,7 +9,9 @@ from google.genai import types
 from backend.cmc_client import CmcClient
 
 logger = logging.getLogger(__name__)
-_GROUNDED_MODEL = "gemini-2.5-flash"
+# Tried in order — when the primary is overloaded (503 "high demand"), the next
+# model usually isn't. Last resort is the neutral fallback, never a blocked trade.
+_GROUNDED_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"]
 _CATALYST_PROMPT = """Search the web for news about {name} ({symbol}) cryptocurrency. \
 Consider ONLY news published in the last 48 hours; ignore anything older.
 Classify the single most important recent catalyst and judge sentiment for the next 24 hours.
@@ -64,20 +66,25 @@ class NewsClient:
 
     def grounded_catalyst(self, symbol: str, name: str) -> CatalystResult:
         """One web-search-grounded Gemini call: recent (48h) news catalyst + sentiment.
-        Used as the pre-trade gate. Fails safe to neutral so an API hiccup never blocks
-        a trade. Called only for candidates about to open (free-tier safe)."""
-        try:
-            resp = self._client.models.generate_content(
-                model=_GROUNDED_MODEL,
-                contents=_CATALYST_PROMPT.format(name=name or symbol, symbol=symbol),
-                config=types.GenerateContentConfig(
-                    tools=[types.Tool(google_search=types.GoogleSearch())]
-                ),
-            )
-            return self._parse_catalyst(resp.text or "")
-        except Exception as e:
-            logger.warning("  %s: grounded catalyst lookup failed (%s) — neutral", symbol, e)
-            return _NEUTRAL_CATALYST
+        Used as the pre-trade gate. Falls back through alternate models on overload
+        (503s usually hit one model, not all), then fails safe to neutral so an API
+        hiccup never blocks a trade. Called only for candidates about to open."""
+        last_err: Exception | None = None
+        for model in _GROUNDED_MODELS:
+            try:
+                resp = self._client.models.generate_content(
+                    model=model,
+                    contents=_CATALYST_PROMPT.format(name=name or symbol, symbol=symbol),
+                    config=types.GenerateContentConfig(
+                        tools=[types.Tool(google_search=types.GoogleSearch())]
+                    ),
+                )
+                return self._parse_catalyst(resp.text or "")
+            except Exception as e:
+                last_err = e
+                logger.debug("  %s: %s failed (%s) — trying next model", symbol, model, e)
+        logger.warning("  %s: all grounded models failed (%s) — neutral", symbol, last_err)
+        return _NEUTRAL_CATALYST
 
     @staticmethod
     def _parse_catalyst(text: str) -> CatalystResult:
