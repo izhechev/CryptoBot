@@ -123,3 +123,25 @@ async def test_fetch_book_stats_none_on_error(market_data):
     ex.fetch_order_book = AsyncMock(side_effect=Exception("boom"))
     route(market_data, "BTC/USDT", ex)
     assert await market_data.fetch_book_stats("BTC", "USDT") is None
+
+
+@pytest.mark.asyncio
+async def test_taker_buy_share_from_binance_klines(market_data):
+    ex = AsyncMock()
+    ex.id = "binance"
+    # kline rows: index 5 = volume, index 9 = taker buy base volume
+    ex.public_get_klines = AsyncMock(return_value=[
+        [0, "1", "1", "1", "1", "100", 0, "0", 0, "70", "0", "0"],
+        [0, "1", "1", "1", "1", "100", 0, "0", 0, "50", "0", "0"],
+    ])
+    route(market_data, "BTC/USDT", ex)
+    share = await market_data.fetch_taker_buy_share("BTC", "USDT")
+    assert share == pytest.approx(0.6)  # 120 / 200
+
+
+@pytest.mark.asyncio
+async def test_taker_buy_share_none_off_binance(market_data):
+    ex = AsyncMock()
+    ex.id = "kucoin"
+    route(market_data, "FOO/USDT", ex)
+    assert await market_data.fetch_taker_buy_share("FOO", "USDT") is None

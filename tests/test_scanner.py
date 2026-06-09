@@ -40,6 +40,7 @@ def scanner(cfg, db):
     s._market = AsyncMock()
     s._market.exchange_id_for = MagicMock(return_value="binance")  # sync method
     s._market.fetch_book_stats = AsyncMock(return_value=(0.1, 1.5))  # healthy book
+    s._market.fetch_taker_buy_share = AsyncMock(return_value=None)  # no data -> fail open
     s._gecko = AsyncMock()
     s._gecko.fetch_price = AsyncMock(return_value=None)  # fall back to CMC price
     s._gecko.fetch_change_7d = AsyncMock(return_value=0.0)  # not pumped
@@ -355,3 +356,27 @@ async def test_whale_requires_liquid_coin(scanner, db):
         await scanner.run_once()
     assert not db.has_open_position("THIN", strategy="whale")
     assert db.get_pending_orders() == []
+
+
+@pytest.mark.asyncio
+async def test_taker_gate_vetoes_seller_led_spike(scanner, db):
+    """Spike on seller-dominated tape (taker buy share < 55%) -> whale vetoed."""
+    _whale_setup(scanner)
+    scanner._market.fetch_taker_buy_share = AsyncMock(return_value=0.40)
+    with patch("backend.scanner.detect_whale", return_value=WhaleSignal(5.0, 4.5)), \
+         patch("backend.scanner.compute_indicators",
+               return_value=IndicatorScores(0.0, 0.0, 0.0, 0.0, 0.0, False, 10.0)):
+        await scanner.run_once()
+    assert not db.has_open_position("PEPE", strategy="whale")
+    assert db.get_pending_orders() == []
+
+
+@pytest.mark.asyncio
+async def test_taker_gate_allows_buyer_led_spike(scanner, db):
+    _whale_setup(scanner)
+    scanner._market.fetch_taker_buy_share = AsyncMock(return_value=0.68)
+    with patch("backend.scanner.detect_whale", return_value=WhaleSignal(5.0, 4.5)), \
+         patch("backend.scanner.compute_indicators",
+               return_value=IndicatorScores(0.0, 0.0, 0.0, 0.0, 0.0, False, 10.0)):
+        await scanner.run_once()
+    assert db.has_open_position("PEPE", strategy="whale") or len(db.get_pending_orders()) == 1

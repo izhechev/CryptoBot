@@ -121,6 +121,31 @@ class MarketData:
         ratio = (bid_depth / ask_depth) if ask_depth > 0 else 10.0
         return spread_pct, ratio
 
+    async def fetch_taker_buy_share(self, symbol: str, quote: str = "USDT",
+                                    exchange_id: Optional[str] = None,
+                                    candles: int = 4) -> Optional[float]:
+        """Share of recent volume bought aggressively (taker buys / total volume)
+        over the last few 15m candles. >0.5 = buyers lifting offers (continuation
+        fuel); <0.5 = distribution into the spike. Binance spot klines expose the
+        taker-buy field; elsewhere returns None (callers fail open)."""
+        ex = self._resolve(symbol, quote, exchange_id)
+        if ex is None or ex.id != "binance":
+            return None
+        try:
+            raw = await ex.public_get_klines({
+                "symbol": f"{symbol}{quote}", "interval": "15m", "limit": candles,
+            })
+        except Exception:
+            return None
+        try:
+            total = sum(float(r[5]) for r in raw)
+            taker_buy = sum(float(r[9]) for r in raw)
+        except (IndexError, TypeError, ValueError):
+            return None
+        if total <= 0:
+            return None
+        return taker_buy / total
+
     async def fetch_current_price(self, symbol: str, quote: str = "USDT",
                                   exchange_id: Optional[str] = None) -> Optional[float]:
         """Fetch current last price. None if no exchange lists the pair live.

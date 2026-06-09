@@ -311,6 +311,13 @@ class Scanner:
             return False
         if not await self._book_ok(coin):  # cheap, before gecko/Gemini calls
             return False
+        # Taker-flow gate: a spike on seller-dominated tape is distribution, not
+        # accumulation. None (no data off-Binance) fails open.
+        share = await self._market.fetch_taker_buy_share(coin.symbol)
+        if share is not None and share < self._cfg.whale_min_taker_buy_share:
+            logger.debug("  %s: taker buy share %.0f%% < %.0f%% — seller-led spike, skipped",
+                         coin.symbol, share * 100, self._cfg.whale_min_taker_buy_share * 100)
+            return False
         # Cheap check first: skip a coin already extended over 7 days (RIF/DASH pattern).
         change_7d = await self._gecko.fetch_change_7d(coin.symbol, coin.name)
         if change_7d is not None and change_7d >= self._cfg.pumped_skip_pct:

@@ -109,6 +109,10 @@ class Config:
     # positive (10/12 combos green at >=$10M/day) while thin mid-caps lose to
     # slippage — whales only ride coins this liquid.
     whale_min_coin_volume_24h: float = 10_000_000.0
+    # Taker-flow gate (Binance-routed coins): the spike window must show aggressive
+    # BUYING (taker buys >= this share of volume) — a spike on seller-dominated
+    # tape is distribution, not accumulation. Fails open where data is unavailable.
+    whale_min_taker_buy_share: float = 0.55
 
 
 def _parse_roi(raw: dict | None, default_pct: float) -> list:
@@ -193,6 +197,7 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         scale_out_enabled=bool(exits.get("scale_out", False)),
         scale_out_fraction=float(exits.get("scale_fraction", 0.5)),
         whale_min_coin_volume_24h=float(whale.get("min_coin_volume_24h", 10_000_000.0)),
+        whale_min_taker_buy_share=float(whale.get("min_taker_buy_share", 0.55)),
         tracking_interval_seconds=int(tracking.get("interval_seconds", 60)),
         tracking_timeframe=tracking.get("candle_timeframe", "1m"),
         tracking_candle_limit=int(tracking.get("candle_limit", 60)),
