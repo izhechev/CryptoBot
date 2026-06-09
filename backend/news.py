@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Optional
 import aiohttp
@@ -9,9 +10,14 @@ from google.genai import types
 from backend.cmc_client import CmcClient
 
 logger = logging.getLogger(__name__)
-# Tried in order — when the primary is overloaded (503 "high demand"), the next
-# model usually isn't. Last resort is the neutral fallback, never a blocked trade.
+# Tried in order — when the primary is overloaded (503) or out of daily quota
+# (429), the next model has a separate bucket. Last resort is the neutral
+# fallback, never a blocked trade.
 _GROUNDED_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"]
+# Cache catalyst verdicts per coin: the prompt looks at a 48h news window, so
+# re-asking the same coin every hourly scan only burns free-tier quota (~250
+# requests/day) for the same answer.
+_CATALYST_CACHE_TTL = 6 * 3600  # seconds
 _CATALYST_PROMPT = """Search the web for news about {name} ({symbol}) cryptocurrency. \
 Consider ONLY news published in the last 48 hours; ignore anything older.
 Classify the single most important recent catalyst and judge sentiment for the next 24 hours.
@@ -63,12 +69,17 @@ class NewsClient:
     def __init__(self, gemini_api_key: str, cmc_client: Optional[CmcClient] = None):
         self._client = genai.Client(api_key=gemini_api_key)
         self._cmc = cmc_client
+        self._catalyst_cache: dict[str, tuple[float, CatalystResult]] = {}
 
     def grounded_catalyst(self, symbol: str, name: str) -> CatalystResult:
         """One web-search-grounded Gemini call: recent (48h) news catalyst + sentiment.
-        Used as the pre-trade gate. Falls back through alternate models on overload
-        (503s usually hit one model, not all), then fails safe to neutral so an API
-        hiccup never blocks a trade. Called only for candidates about to open."""
+        Used as the pre-trade gate. Verdicts are cached per coin for a few hours
+        (quota budget); on failure it falls back through alternate models (503/429
+        usually hit one model's bucket, not all), then fails safe to neutral so an
+        API hiccup never blocks a trade. Called only for candidates about to open."""
+        cached = self._catalyst_cache.get(symbol)
+        if cached and time.monotonic() - cached[0] < _CATALYST_CACHE_TTL:
+            return cached[1]
         last_err: Exception | None = None
         for model in _GROUNDED_MODELS:
             try:
@@ -79,10 +90,13 @@ class NewsClient:
                         tools=[types.Tool(google_search=types.GoogleSearch())]
                     ),
                 )
-                return self._parse_catalyst(resp.text or "")
+                result = self._parse_catalyst(resp.text or "")
+                self._catalyst_cache[symbol] = (time.monotonic(), result)
+                return result
             except Exception as e:
                 last_err = e
                 logger.debug("  %s: %s failed (%s) — trying next model", symbol, model, e)
+        # Failures are NOT cached — quota/overload may clear by the next scan.
         logger.warning("  %s: all grounded models failed (%s) — neutral", symbol, last_err)
         return _NEUTRAL_CATALYST
 
