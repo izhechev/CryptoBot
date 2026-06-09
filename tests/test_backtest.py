@@ -99,3 +99,28 @@ def test_sweep_overrides_config(cfg):
     df = candles(_WARMUP + 60)
     trades = simulate_coin(c, "X", df, regime=None, strategies="whale")
     assert isinstance(trades, list)
+
+
+def test_simulate_spot_from_scores_fires_and_dedups(cfg):
+    """Fires when a precomputed score clears the bar, stays busy until the exit,
+    and ignores scores below the bar."""
+    from backend.backtest import simulate_spot_from_scores
+    df = candles(_WARMUP + 120)
+    scores = [
+        (_WARMUP, 80.0, True),       # >= 75 bull bar -> opens
+        (_WARMUP + 4, 90.0, True),   # while busy -> ignored
+        (_WARMUP + 8, 60.0, True),   # below bar -> ignored
+    ]
+    trades = simulate_spot_from_scores(cfg, "X", df, scores)
+    assert len(trades) == 1
+    assert trades[0].strategy == "standard"
+
+
+def test_simulate_spot_respects_bear_bar(cfg):
+    from backend.backtest import simulate_spot_from_scores
+    df = candles(_WARMUP + 120)
+    # 78 clears the 75 bull bar but NOT the 85 bear bar (conftest default bear=85?
+    # use cfg value to stay robust)
+    score = (cfg.signal_threshold + cfg.bear_signal_threshold) / 2
+    trades = simulate_spot_from_scores(cfg, "X", df, [(_WARMUP, score, False)])
+    assert trades == []

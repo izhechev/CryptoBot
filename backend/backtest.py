@@ -289,6 +289,90 @@ _SWEEP_GRID = {
     "atr_stop_multiplier": [1.5, 2.0, 2.5],
 }
 
+# Spot sweep: entry bars + exit shape. Indicator scores are precomputed once per
+# coin (they don't depend on these), so all combos re-test in seconds.
+_SPOT_SWEEP_GRID = {
+    "signal_threshold": [70.0, 75.0, 80.0],
+    "bear_signal_threshold": [75.0, 80.0, 85.0],
+    "trail_arm_pct": [4.0, 6.0],
+    "atr_stop_multiplier": [1.5, 2.5],
+}
+
+
+def precompute_spot_scores(cfg: Config, df: pd.DataFrame,
+                           regime: Optional[pd.Series]) -> list[tuple[int, float, bool]]:
+    """One pass of the (expensive) indicator stack per coin: (step_idx, technical
+    score, regime-bullish) at every hourly scan step. Thresholds/exits are swept
+    against this without recomputing indicators."""
+    rows: list[tuple[int, float, bool]] = []
+    for i in range(_WARMUP, len(df) - 1, _SCAN_STRIDE):
+        window = df.iloc[: i + 1]
+        ind = compute_indicators(window, cfg, df_htf=_htf(window))
+        bullish = _regime_at(regime, df.index[i]) if regime is not None else True
+        rows.append((i, ind.total, bullish))
+    return rows
+
+
+def simulate_spot_from_scores(cfg: Config, symbol: str, df: pd.DataFrame,
+                              scores: list[tuple[int, float, bool]]) -> list[SimTrade]:
+    """Spot trades from precomputed scores under the given thresholds/exits."""
+    trades: list[SimTrade] = []
+    busy_until = -1
+    for i, total, bullish in scores:
+        if i < busy_until:
+            continue
+        bar = cfg.signal_threshold if bullish else cfg.bear_signal_threshold
+        if total < bar:
+            continue
+        entry_idx = i + 1
+        entry_price = float(df["open"].iloc[entry_idx])
+        if entry_price <= 0:
+            continue
+        stop_pct, trail_pct = _exit_levels(cfg, df.iloc[: i + 1])
+        exit_idx, exit_price, outcome = simulate_exit(
+            cfg, df, entry_idx, entry_price, "standard", stop_pct, trail_pct)
+        trades.append(SimTrade(
+            symbol=symbol, strategy="standard",
+            entry_price=entry_price, exit_price=exit_price, outcome=outcome,
+            pnl_pct=(exit_price - entry_price) / entry_price * 100,
+            held_min=(exit_idx - entry_idx) * 15,
+        ))
+        busy_until = exit_idx
+    return trades
+
+
+def run_spot_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
+                   regime: Optional[pd.Series]) -> None:
+    """Grid-search spot thresholds/exits over precomputed indicator scores."""
+    print(f"Precomputing indicator scores for {len(histories)} coins "
+          f"(one heavy pass; combos re-test in seconds)...")
+    scores: dict[str, list] = {}
+    for n, (sym, df) in enumerate(histories.items(), 1):
+        scores[sym] = precompute_spot_scores(cfg, df, regime)
+        if n % 10 == 0:
+            print(f"  ...{n}/{len(histories)} coins scored")
+
+    cost = 2 * (_FEE_PCT + _SLIPPAGE_PCT)
+    keys = list(_SPOT_SWEEP_GRID)
+    combos = list(itertools.product(*_SPOT_SWEEP_GRID.values()))
+    rows = []
+    for combo in combos:
+        c = replace(cfg, **dict(zip(keys, combo)))
+        trades: list[SimTrade] = []
+        for sym, df in histories.items():
+            trades.extend(simulate_spot_from_scores(c, sym, df, scores[sym]))
+        if not trades:
+            rows.append((combo, 0, 0.0, 0.0))
+            continue
+        wins = sum(1 for t in trades if t.outcome == "win")
+        net = statistics.mean(t.pnl_pct - cost for t in trades)
+        rows.append((combo, len(trades), wins / len(trades) * 100, net))
+    rows.sort(key=lambda r: r[3], reverse=True)
+    print(f"\n{'bar':>5} {'bear_bar':>8} {'trail_arm':>9} {'atr_stop':>8} | {'trades':>6} {'win%':>5} {'net_exp':>8}")
+    for combo, n, wr, net in rows:
+        print(f"{combo[0]:>5} {combo[1]:>8} {combo[2]:>9} {combo[3]:>8} | {n:>6} {wr:>4.0f}% {net:>+7.2f}%")
+    print("\n(net_exp = average net P&L per trade after fees+slippage; higher is better)")
+
 
 def run_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
               regime: Optional[pd.Series]) -> None:
@@ -325,8 +409,8 @@ async def main() -> None:
                     help="skip the top-N market-cap coins (test mid/small caps, "
                          "where the live bot actually finds whales)")
     ap.add_argument("--strategy", choices=["both", "whale", "spot"], default="both")
-    ap.add_argument("--sweep", action="store_true",
-                    help="grid-search whale parameters instead of a single run")
+    ap.add_argument("--sweep", choices=["whale", "spot"], default=None,
+                    help="grid-search parameters for one strategy instead of a single run")
     ap.add_argument("--no-cache", action="store_true")
     ap.add_argument("--no-costs", action="store_true",
                     help="report gross only (no fee/slippage estimate)")
@@ -356,8 +440,11 @@ async def main() -> None:
             print(f"  ...{n}/{len(coins)} coins loaded")
     await md.close()
 
-    if args.sweep:
+    if args.sweep == "whale":
         run_sweep(cfg, histories, regime)
+        return
+    if args.sweep == "spot":
+        run_spot_sweep(cfg, histories, regime)
         return
 
     trades: list[SimTrade] = []
