@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 from backend.config import Config
 from backend.storage import Storage
@@ -98,6 +99,26 @@ class Scanner:
             return False
         return len(self._db.get_open_positions()) < self._cfg.max_open_positions
 
+    def _in_cooldown(self, symbol: str) -> bool:
+        """Freqtrade-style protection: after a loss, leave the coin alone for
+        loss_cooldown_hours; after any close, pause reentry_cooldown_hours so the
+        windowed detector can't instantly re-buy the same spike."""
+        last = self._db.last_exit(symbol)
+        if not last:
+            return False
+        outcome, exit_at = last
+        if exit_at is None:
+            return False
+        if exit_at.tzinfo is None:
+            exit_at = exit_at.replace(tzinfo=timezone.utc)
+        hours = (datetime.now(timezone.utc) - exit_at).total_seconds() / 3600
+        limit = self._cfg.loss_cooldown_hours if outcome == "loss" else self._cfg.reentry_cooldown_hours
+        if hours < limit:
+            logger.debug("  %s: in cooldown (%s %.1fh ago < %.1fh) — skipped",
+                         symbol, outcome, hours, limit)
+            return True
+        return False
+
     def _spot_threshold(self) -> float:
         """Fire threshold for spot: normal in a bullish regime, exceptional-only
         while BTC is below its 4h trend (a bar, not a closed door)."""
@@ -183,7 +204,7 @@ class Scanner:
         # In a bear regime spot isn't blocked, it needs an exceptional score + budget.
         if ind_scores.total < self._spot_threshold():
             return result
-        if not self._can_open(respect_regime=False):
+        if not self._can_open(respect_regime=False) or self._in_cooldown(coin.symbol):
             return result
 
         catalyst = self._news.grounded_catalyst(coin.symbol, coin.name)
@@ -259,6 +280,8 @@ class Scanner:
         # Whales can bypass the (multi-day) BTC regime gate — they're short-hold and
         # already require the coin itself to be in an uptrend. Still respect the cap.
         if not self._can_open(respect_regime=not self._cfg.whale_bypass_regime):
+            return False
+        if self._in_cooldown(coin.symbol):
             return False
         # Cheap check first: skip a coin already extended over 7 days (RIF/DASH pattern).
         change_7d = await self._gecko.fetch_change_7d(coin.symbol, coin.name)

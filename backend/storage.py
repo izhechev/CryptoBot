@@ -201,6 +201,17 @@ class Storage:
             ).fetchall()
             return [_position_from_row(r) for r in rows]
 
+    def last_exit(self, coin_symbol: str) -> Optional[tuple[str, datetime]]:
+        """(outcome, exit_at) of the coin's most recently closed position, or None.
+        Drives re-entry cooldowns: don't immediately re-buy a coin that just closed."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT outcome, exit_at FROM positions WHERE coin_symbol=? "
+                "AND outcome IS NOT NULL ORDER BY exit_at DESC LIMIT 1",
+                (coin_symbol,),
+            ).fetchone()
+            return (row["outcome"], _dt(row["exit_at"])) if row else None
+
     def update_position_peak(self, position_id: int, peak_price: float) -> None:
         """Persist a new high-water mark for an open position (trailing reference)."""
         with self._conn() as conn:

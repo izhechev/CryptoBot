@@ -19,6 +19,16 @@ scoring:
   pumped_skip_pct: 30            # skip a candidate already up this % over 7 days (RIF/DASH pattern)
   news_veto_threshold: 35        # skip a candidate if grounded news sentiment is below this
   bear_signal_threshold: 80      # spot fire threshold while BTC is below its 4h trend (vs 75 normally)
+  technical_weight: 0.65
+  news_weight: 0.35
+  min_volume_24h: 25000          # CMC server-side filter: ~2785 coins (lower = more, thinner coins)
+  downtrend_penalty: 0.5         # multiply technical score if 4h is NOT in an uptrend
+  indicators:
+    macd_weight: 30              # momentum (gated by volume confirmation)
+    rsi_weight: 20               # uptrend-aware RSI
+    ema_weight: 15               # price above EMA-50 on entry timeframe
+    volume_weight: 15            # volume spike confirmation
+    divergence_weight: 20        # bullish MACD/price divergence
 
 # Volatility-scaled exits: stop & trail are sized from each coin's OWN ATR at entry
 # (clamped), instead of one-size-fits-all %. Once a trade peaks past trail_arm_pct,
@@ -33,16 +43,10 @@ exits:
   trail_pct_min: 2.0
   trail_pct_max: 6.0
   trail_arm_pct: 6.0            # arm the trail once the trade has peaked past this
-  technical_weight: 0.65
-  news_weight: 0.35
-  min_volume_24h: 25000          # CMC server-side filter: ~2785 coins (lower = more, thinner coins)
-  downtrend_penalty: 0.5         # multiply technical score if 4h is NOT in an uptrend
-  indicators:
-    macd_weight: 30              # momentum (gated by volume confirmation)
-    rsi_weight: 20               # uptrend-aware RSI
-    ema_weight: 15               # price above EMA-50 on entry timeframe
-    volume_weight: 15            # volume spike confirmation
-    divergence_weight: 20        # bullish MACD/price divergence
+  # Re-entry cooldowns: don't re-buy the same coin right after a close — with the
+  # windowed whale detection, the spike that just stopped out is still detectable.
+  loss_cooldown_hours: 4
+  reentry_cooldown_hours: 2
 
 paper_trading:
   take_profit_pct: 10.0

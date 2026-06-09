@@ -12,6 +12,18 @@ class TradeOutcome(str, Enum):
     TIMEOUT = "timeout"
 
 
+def roi_target(cfg: Config, strategy: str, elapsed_min: float) -> float:
+    """Time-decaying take-profit target (%) for how long a trade has been open.
+    Table is [(minutes, pct)] sorted high->low minutes; the first row whose
+    minute-threshold has elapsed applies. Shared by live trading and the backtester
+    so the simulation can never drift from real behavior."""
+    table = cfg.whale_roi if strategy == "whale" else cfg.standard_roi
+    for minutes, pct in table:
+        if elapsed_min >= minutes:
+            return pct
+    return table[-1][1] if table else 100.0
+
+
 class PaperTrading:
     def __init__(self, cfg: Config, db: Storage):
         self._cfg = cfg
@@ -58,14 +70,7 @@ class PaperTrading:
         return stop_loss_pct
 
     def _roi_target(self, strategy: str, elapsed_min: float) -> float:
-        """Time-decaying take-profit target (%) for how long the trade has been open.
-        Table is [(minutes, pct)] sorted high->low minutes; the first row whose
-        minute-threshold has elapsed applies."""
-        table = self._cfg.whale_roi if strategy == "whale" else self._cfg.standard_roi
-        for minutes, pct in table:
-            if elapsed_min >= minutes:
-                return pct
-        return table[-1][1] if table else 100.0
+        return roi_target(self._cfg, strategy, elapsed_min)
 
     def check_position(self, pos: Position, current_price: float) -> Optional[TradeOutcome]:
         """Exit logic, in priority order:

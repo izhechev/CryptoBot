@@ -276,3 +276,25 @@ async def test_whale_skipped_on_migration(scanner, db):
                return_value=IndicatorScores(0.0, 0.0, 0.0, 0.0, 0.0, False, 10.0)):
         await scanner.run_once()
     assert not db.has_open_position("PEPE", strategy="whale")
+
+
+@pytest.mark.asyncio
+async def test_cooldown_blocks_reentry_after_loss(scanner, db):
+    """A coin that just stopped out must not be re-bought while in cooldown — the
+    spike that lost is still inside the detection window."""
+    from datetime import datetime, timezone
+    from backend.storage import Signal, Position
+    sig = db.save_signal(Signal(id=None, coin_symbol="PEPE", coin_name="Pepe",
+                                total_score=100.0, technical_score=5.0, news_score=0.0,
+                                gemini_explanation="w", fired_at=datetime.now(timezone.utc),
+                                strategy="whale"))
+    db.save_position(Position(id=None, signal_id=sig.id, coin_symbol="PEPE",
+                              entry_price=1.0, entry_at=datetime.now(timezone.utc),
+                              exit_price=0.93, exit_at=datetime.now(timezone.utc),
+                              outcome="loss", pnl_pct=-7.0, strategy="whale"))
+    _whale_setup(scanner)
+    with patch("backend.scanner.detect_whale", return_value=WhaleSignal(5.0, 4.5)), \
+         patch("backend.scanner.compute_indicators",
+               return_value=IndicatorScores(0.0, 0.0, 0.0, 0.0, 0.0, False, 10.0)):
+        await scanner.run_once()
+    assert not db.has_open_position("PEPE", strategy="whale")
