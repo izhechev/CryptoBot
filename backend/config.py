@@ -67,6 +67,10 @@ class Config:
     pumped_skip_pct: float = 30.0      # skip a candidate already up this % over 7 days
     news_veto_threshold: float = 35.0  # skip if grounded news sentiment is below this
     whale_max_thrust_pct: float = 18.0 # reject parabolic thrust over the lookback (blow-off top)
+    # How many recent candles to search for a spike. Hourly scans only "see" the
+    # latest candle for one candle-width — a window covers the whole gap between
+    # scans. Spikes need >=1 candle of follow-through, so the live candle is skipped.
+    whale_detect_window: int = 5
 
 
 def _parse_roi(raw: dict | None, default_pct: float) -> list:
@@ -129,6 +133,7 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         pumped_skip_pct=float(scoring.get("pumped_skip_pct", 30.0)),
         news_veto_threshold=float(scoring.get("news_veto_threshold", 35.0)),
         whale_max_thrust_pct=float(whale.get("max_thrust_pct", 18.0)),
+        whale_detect_window=int(whale.get("detect_window", 5)),
         tracking_interval_seconds=int(tracking.get("interval_seconds", 60)),
         tracking_timeframe=tracking.get("candle_timeframe", "1m"),
         tracking_candle_limit=int(tracking.get("candle_limit", 60)),

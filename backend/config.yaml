@@ -63,6 +63,8 @@ whale:
   price_thrust_pct: 3.0         # price up >= 3% over the thrust lookback
   max_thrust_pct: 18            # reject if thrust >= this % over the lookback (blow-off top: DEGO/RAD)
   thrust_lookback: 3            # number of candles for the price-thrust window
+  detect_window: 5              # search the last N candles for a spike (hourly scans miss
+                                # mid-hour spikes otherwise); needs >=1 candle of follow-through
   take_profit_pct: 15.0
   stop_loss_pct: 7.0
   max_hold_hours: 12
