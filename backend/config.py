@@ -71,6 +71,9 @@ class Config:
     # latest candle for one candle-width — a window covers the whole gap between
     # scans. Spikes need >=1 candle of follow-through, so the live candle is skipped.
     whale_detect_window: int = 5
+    # Bear-regime spot rule: when BTC is below its 4h trend, spot entries are not
+    # blocked outright — they just need an exceptional score (quality, not a quota).
+    bear_signal_threshold: float = 85.0   # spot fire threshold while BTC is bearish
 
 
 def _parse_roi(raw: dict | None, default_pct: float) -> list:
@@ -134,6 +137,7 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         news_veto_threshold=float(scoring.get("news_veto_threshold", 35.0)),
         whale_max_thrust_pct=float(whale.get("max_thrust_pct", 18.0)),
         whale_detect_window=int(whale.get("detect_window", 5)),
+        bear_signal_threshold=float(scoring.get("bear_signal_threshold", 85.0)),
         tracking_interval_seconds=int(tracking.get("interval_seconds", 60)),
         tracking_timeframe=tracking.get("candle_timeframe", "1m"),
         tracking_candle_limit=int(tracking.get("candle_limit", 60)),

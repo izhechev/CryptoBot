@@ -46,7 +46,7 @@ class Scanner:
         self._trader = PaperTrading(cfg, db)
         self._gecko = GeckoClient(cfg.gecko_api_key)
         self._notifier: Notifier | None = None
-        self._allow_entries = True  # set per-scan by the market-regime check
+        self._regime_bullish = True  # set per-scan by the market-regime check
 
     def set_notifier(self, notifier: Notifier) -> None:
         self._notifier = notifier
@@ -56,7 +56,7 @@ class Scanner:
 
     async def run_once(self) -> None:
         logger.info("Scan started")
-        self._allow_entries = await self._market_regime_ok()
+        self._regime_bullish = await self._market_regime_ok()
         coins = await self._cmc.fetch_all_coins(min_volume_24h=self._cfg.min_volume_24h)
         total = len(coins)
         logger.info("Fetched %d coins from CMC (volume-filtered)", total)
@@ -85,15 +85,23 @@ class Scanner:
         ema = df["close"].ewm(span=50, adjust=False).mean().iloc[-1]
         ok = bool(df["close"].iloc[-1] > ema)
         if not ok:
-            logger.info("Market regime: BTC below 4h EMA-50 — holding off on NEW entries this scan")
+            logger.info(
+                "Market regime: BTC below 4h EMA-50 — spot needs score >=%.0f, whales unaffected",
+                self._cfg.bear_signal_threshold,
+            )
         return ok
 
     def _can_open(self, respect_regime: bool = True) -> bool:
-        """Gate an entry on the concurrent-position cap, and — for regime-respecting
-        strategies — on the market regime. Whales can opt out of the regime check."""
-        if respect_regime and not self._allow_entries:
+        """Gate an entry on the concurrent-position cap, and — for strategies that
+        hard-respect the regime — on the market regime itself."""
+        if respect_regime and not self._regime_bullish:
             return False
         return len(self._db.get_open_positions()) < self._cfg.max_open_positions
+
+    def _spot_threshold(self) -> float:
+        """Fire threshold for spot: normal in a bullish regime, exceptional-only
+        while BTC is below its 4h trend (a bar, not a closed door)."""
+        return self._cfg.signal_threshold if self._regime_bullish else self._cfg.bear_signal_threshold
 
     def _log_scan_summary(self, results: list[_CoinResult]) -> None:
         """One INFO summary per scan: counts + closest-to-firing coins. This is the
@@ -161,7 +169,10 @@ class Scanner:
 
         # Only spend a grounded news call on coins that would fire on technicals AND that
         # we can open — keeps Gemini to a few candidates per scan (free-tier safe).
-        if ind_scores.total < self._cfg.signal_threshold or not self._can_open():
+        # In a bear regime spot isn't blocked, it needs an exceptional score + budget.
+        if ind_scores.total < self._spot_threshold():
+            return result
+        if not self._can_open(respect_regime=False):
             return result
 
         catalyst = self._news.grounded_catalyst(coin.symbol, coin.name)
@@ -178,7 +189,7 @@ class Scanner:
             total_score, catalyst.reason,
         )
 
-        if total_score < self._cfg.signal_threshold:
+        if total_score < self._spot_threshold():
             return result  # bearish news vetoed it
         if catalyst.catalyst == "migration":
             logger.debug("  %s: migration risk — skipped", coin.symbol)
