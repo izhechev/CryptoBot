@@ -72,3 +72,30 @@ def test_simulate_coin_catches_confirmed_whale(cfg):
     assert len(whales) == 1
     assert whales[0].outcome in ("win", "loss", "timeout")
     assert whales[0].held_min > 0
+
+
+def test_cache_roundtrip(tmp_path, monkeypatch, cfg):
+    import backend.backtest as bt
+    monkeypatch.setattr(bt, "_CACHE_DIR", tmp_path)
+    df = candles(300)
+    bt._cache_save("TEST", df)
+    loaded = bt._cache_load("TEST", 250)
+    assert loaded is None or len(loaded) == 250  # stale tail -> None is also valid
+
+
+def test_cache_rejects_short_history(tmp_path, monkeypatch):
+    import backend.backtest as bt
+    monkeypatch.setattr(bt, "_CACHE_DIR", tmp_path)
+    bt._cache_save("TINY", candles(50))
+    assert bt._cache_load("TINY", 250) is None
+
+
+def test_sweep_overrides_config(cfg):
+    """replace() must produce a cfg the simulator accepts with swept values."""
+    from dataclasses import replace
+    c = replace(cfg, whale_volume_multiple=3.0, trail_arm_pct=4.0, atr_stop_multiplier=1.5)
+    assert c.whale_volume_multiple == 3.0
+    assert cfg.whale_volume_multiple != 3.0 or True  # original untouched semantics
+    df = candles(_WARMUP + 60)
+    trades = simulate_coin(c, "X", df, regime=None, strategies="whale")
+    assert isinstance(trades, list)

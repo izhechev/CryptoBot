@@ -28,7 +28,7 @@ class _CoinResult:
     """Outcome of scanning one coin — aggregated into the per-scan summary."""
     symbol: str
     technical_score: float = 0.0
-    news_score: float = 0.0
+    news_score: Optional[float] = None  # None = news gate never reached (not checked)
     total_score: float = 0.0
     # no_candles | below_pre_filter | scored
     status: str = "no_candles"
@@ -162,7 +162,8 @@ class Scanner:
         if ranked:
             top = ", ".join(
                 f"{r.symbol} tech={r.technical_score:.0f}"
-                + (f" news={r.news_score:.0f}→total={r.total_score:.0f}" if r.status == "scored" else "")
+                + ((f" news={r.news_score:.0f}" if r.news_score is not None else " news=—")
+                   + f"→total={r.total_score:.0f}" if r.status == "scored" else "")
                 for r in ranked
             )
             logger.info(

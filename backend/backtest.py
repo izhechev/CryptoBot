@@ -20,9 +20,12 @@ Usage:
 """
 import argparse
 import asyncio
+import itertools
 import logging
 import statistics
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
@@ -42,6 +45,8 @@ _WARMUP = 250                  # candles needed before the first scan step
 _SCAN_STRIDE = 4               # 4 x 15m = hourly, matching the live scan cadence
 _FEE_PCT = 0.1                 # per side
 _SLIPPAGE_PCT = 0.15           # per side
+_CACHE_DIR = Path(".backtest_cache")
+_CACHE_MAX_AGE_S = 2 * 3600    # refetch if the cached tail is older than this
 
 
 @dataclass
@@ -130,7 +135,7 @@ def _regime_at(regime: pd.Series, ts) -> bool:
 
 
 def simulate_coin(cfg: Config, symbol: str, df: pd.DataFrame,
-                  regime: Optional[pd.Series]) -> list[SimTrade]:
+                  regime: Optional[pd.Series], strategies: str = "both") -> list[SimTrade]:
     """Hourly scan steps over the coin's history; one open position per strategy
     at a time (live dedup); simulate each entry straight through to its exit."""
     trades: list[SimTrade] = []
@@ -142,10 +147,10 @@ def simulate_coin(cfg: Config, symbol: str, df: pd.DataFrame,
         bullish = _regime_at(regime, ts) if regime is not None else True
 
         candidates: list[str] = []
-        if i >= busy_until["whale"]:
+        if strategies in ("both", "whale") and i >= busy_until["whale"]:
             if detect_whale(window, cfg) is not None:
                 candidates.append("whale")
-        if i >= busy_until["standard"]:
+        if strategies in ("both", "spot") and i >= busy_until["standard"]:
             ind = compute_indicators(window, cfg, df_htf=_htf(window))
             bar = cfg.signal_threshold if bullish else cfg.bear_signal_threshold
             if ind.total >= bar:
@@ -168,6 +173,42 @@ def simulate_coin(cfg: Config, symbol: str, df: pd.DataFrame,
             busy_until[strategy] = exit_idx
 
     return trades
+
+
+def _cache_load(symbol: str, candles: int) -> Optional[pd.DataFrame]:
+    f = _CACHE_DIR / f"{symbol}_15m.pkl"
+    if not f.exists():
+        return None
+    try:
+        df = pd.read_pickle(f)
+    except Exception:
+        return None
+    age_s = time.time() - df.index[-1].timestamp()
+    if len(df) < candles or age_s > _CACHE_MAX_AGE_S:
+        return None
+    return df.iloc[-candles:]
+
+
+def _cache_save(symbol: str, df: pd.DataFrame) -> None:
+    try:
+        _CACHE_DIR.mkdir(exist_ok=True)
+        df.to_pickle(_CACHE_DIR / f"{symbol}_15m.pkl")
+    except Exception as e:
+        logger.warning("%s: cache write failed: %s", symbol, e)
+
+
+async def fetch_history(md: MarketData, symbol: str, candles: int,
+                        use_cache: bool = True) -> Optional[pd.DataFrame]:
+    """History with a local disk cache — parameter sweeps re-run in seconds
+    instead of re-downloading weeks of candles."""
+    if use_cache:
+        cached = _cache_load(symbol, candles)
+        if cached is not None:
+            return cached
+    df = await _fetch_history(md, symbol, candles)
+    if df is not None and use_cache:
+        _cache_save(symbol, df)
+    return df
 
 
 async def _fetch_history(md: MarketData, symbol: str, candles: int) -> Optional[pd.DataFrame]:
@@ -238,6 +279,41 @@ def _report(trades: list[SimTrade], costs: bool) -> None:
               f"worst: {worst.symbol} {worst.pnl_pct:+.1f}% ({worst.held_min:.0f}m)")
 
 
+# Sweep grid: the whale parameters the v1 data implicated, tested combinatorially.
+_SWEEP_GRID = {
+    "whale_volume_multiple": [3.0, 4.0, 5.0],
+    "trail_arm_pct": [4.0, 6.0, 8.0],
+    "atr_stop_multiplier": [1.5, 2.0, 2.5],
+}
+
+
+def run_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
+              regime: Optional[pd.Series]) -> None:
+    """Grid-search whale parameters over cached history (no network). Ranks each
+    combo by net expectancy per trade — evidence-based tuning, not vibes."""
+    cost = 2 * (_FEE_PCT + _SLIPPAGE_PCT)
+    rows = []
+    keys = list(_SWEEP_GRID)
+    combos = list(itertools.product(*_SWEEP_GRID.values()))
+    print(f"Sweeping {len(combos)} whale-parameter combos over {len(histories)} coins...")
+    for combo in combos:
+        c = replace(cfg, **dict(zip(keys, combo)))
+        trades: list[SimTrade] = []
+        for sym, df in histories.items():
+            trades.extend(simulate_coin(c, sym, df, regime, strategies="whale"))
+        if not trades:
+            rows.append((combo, 0, 0.0, 0.0))
+            continue
+        wins = sum(1 for t in trades if t.outcome == "win")
+        net = statistics.mean(t.pnl_pct - cost for t in trades)
+        rows.append((combo, len(trades), wins / len(trades) * 100, net))
+    rows.sort(key=lambda r: r[3], reverse=True)
+    print(f"\n{'vol_mult':>8} {'trail_arm':>9} {'atr_stop':>8} | {'trades':>6} {'win%':>5} {'net_exp':>8}")
+    for combo, n, wr, net in rows:
+        print(f"{combo[0]:>8} {combo[1]:>9} {combo[2]:>8} | {n:>6} {wr:>4.0f}% {net:>+7.2f}%")
+    print("\n(net_exp = average net P&L per trade after fees+slippage; higher is better)")
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser(description="Replay history through the live logic")
     ap.add_argument("--days", type=int, default=21)
@@ -245,6 +321,10 @@ async def main() -> None:
     ap.add_argument("--offset", type=int, default=0,
                     help="skip the top-N market-cap coins (test mid/small caps, "
                          "where the live bot actually finds whales)")
+    ap.add_argument("--strategy", choices=["both", "whale", "spot"], default="both")
+    ap.add_argument("--sweep", action="store_true",
+                    help="grid-search whale parameters instead of a single run")
+    ap.add_argument("--no-cache", action="store_true")
     ap.add_argument("--no-costs", action="store_true",
                     help="report gross only (no fee/slippage estimate)")
     args = ap.parse_args()
@@ -256,25 +336,30 @@ async def main() -> None:
     listings = await cmc.fetch_all_coins(min_volume_24h=cfg.min_volume_24h)
     coins = listings[args.offset: args.offset + args.coins]
     candles = args.days * _CANDLES_PER_DAY + _WARMUP
+    use_cache = not args.no_cache
 
     print(f"Backtesting {len(coins)} coins x {args.days} days "
           f"(hourly scans, live entry/exit logic; news gate NOT simulated)")
 
-    btc_df = await _fetch_history(md, "BTC", candles)
+    btc_df = await fetch_history(md, "BTC", candles, use_cache)
     regime = _btc_regime_series(btc_df) if btc_df is not None else None
 
-    trades: list[SimTrade] = []
-    done = 0
-    for coin in coins:
-        df = await _fetch_history(md, coin.symbol, candles)
-        done += 1
-        if done % 10 == 0:
-            print(f"  ...{done}/{len(coins)} coins simulated, {len(trades)} trades so far")
-        if df is None:
-            continue
-        trades.extend(simulate_coin(cfg, coin.symbol, df, regime))
+    histories: dict[str, pd.DataFrame] = {}
+    for n, coin in enumerate(coins, 1):
+        df = await fetch_history(md, coin.symbol, candles, use_cache)
+        if df is not None:
+            histories[coin.symbol] = df
+        if n % 10 == 0:
+            print(f"  ...{n}/{len(coins)} coins loaded")
     await md.close()
 
+    if args.sweep:
+        run_sweep(cfg, histories, regime)
+        return
+
+    trades: list[SimTrade] = []
+    for sym, df in histories.items():
+        trades.extend(simulate_coin(cfg, sym, df, regime, strategies=args.strategy))
     _report(trades, costs=not args.no_costs)
     if not args.no_costs:
         print(f"\n(costs modeled: {_FEE_PCT}% fee + {_SLIPPAGE_PCT}% slippage per side)")
