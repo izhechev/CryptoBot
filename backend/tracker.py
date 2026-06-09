@@ -1,10 +1,12 @@
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 from backend.config import Config
-from backend.storage import Storage, Position
+from backend.storage import Storage, Position, PendingOrder
 from backend.gecko import GeckoClient
 from backend.paper_trading import PaperTrading, TradeOutcome
+from backend.signals import SignalEngine
 from backend.format_utils import fmt_price
 from backend.notify import Notifier
 
@@ -21,6 +23,7 @@ class Tracker:
         self._db = db
         self._gecko = GeckoClient(cfg.gecko_api_key)
         self._trader = PaperTrading(cfg, db)
+        self._signals = SignalEngine(cfg, db)
         self._notifier: Optional[Notifier] = None
 
     def set_notifier(self, notifier: Notifier) -> None:
@@ -28,12 +31,16 @@ class Tracker:
 
     async def run_once(self) -> None:
         positions = self._db.get_open_positions()
-        if not positions:
+        pendings = self._db.get_pending_orders()
+        if not positions and not pendings:
             return
 
         prices = await self._gecko.fetch_prices(
             [(p.coin_symbol, p.coin_name) for p in positions]
+            + [(po.coin_symbol, po.coin_name) for po in pendings]
         )
+
+        await self._process_pendings(pendings, prices)
 
         updates = []
         for pos in positions:
@@ -64,6 +71,38 @@ class Tracker:
 
         if updates and self._notifier:
             await self._notifier.send_prices(updates)
+
+    async def _process_pendings(self, pendings: list[PendingOrder], prices: dict) -> None:
+        """Fill whale retest limits when price pulls back to them; expire stale ones."""
+        now = datetime.now(timezone.utc)
+        for po in pendings:
+            try:
+                expires = po.expires_at
+                if expires is not None and expires.tzinfo is None:
+                    expires = expires.replace(tzinfo=timezone.utc)
+                if expires is not None and now >= expires:
+                    self._db.delete_pending_order(po.id)
+                    logger.info("Retest limit expired unfilled: %s @ %s",
+                                po.coin_symbol, fmt_price(po.limit_price))
+                    continue
+                price = prices.get(po.coin_symbol)
+                if price is None or price > po.limit_price:
+                    continue
+                # Filled: price pulled back to (or below) the limit.
+                self._db.delete_pending_order(po.id)
+                event = self._signals.emit_whale(
+                    coin_symbol=po.coin_symbol, coin_name=po.coin_name,
+                    volume_ratio=po.volume_ratio, price_thrust_pct=po.thrust_pct)
+                if event is None:
+                    continue  # already holding this coin
+                self._trader.open_position(event, price, po.exchange,
+                                           stop_pct=po.stop_pct, trail_pct=po.trail_pct)
+                logger.info("Whale retest FILLED: %s @ %s (limit %s)",
+                            po.coin_symbol, fmt_price(price), fmt_price(po.limit_price))
+                if self._notifier:
+                    await self._notifier.send_signal_alert(event, price)
+            except Exception as e:
+                logger.warning("Pending order error for %s: %s", po.coin_symbol, e)
 
     async def _close(self, pos: Position, exit_price: float, outcome: TradeOutcome) -> None:
         self._trader.close_position(pos, exit_price, outcome)

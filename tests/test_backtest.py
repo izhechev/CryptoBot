@@ -165,3 +165,12 @@ def test_retest_entry_skips_when_never_filled(cfg):
     c = replace(cfg, whale_entry_mode="retest")
     trades = [t for t in simulate_coin(c, "T", df, None, strategies="whale")]
     assert trades == []
+
+
+def test_liquidity_scaled_cost(cfg):
+    """Thin coin -> heavy round-trip cost; liquid coin -> near the floor."""
+    from backend.backtest import _trade_cost_pct
+    thin = candles(50, price=0.01, vol=100_000.0)      # ~$1k/candle -> huge participation
+    liquid = candles(50, price=100.0, vol=100_000.0)   # ~$10M/candle -> negligible
+    assert _trade_cost_pct(thin, 30, 1000.0) >= 3.0    # capped slip 2%/side + fees
+    assert _trade_cost_pct(liquid, 30, 1000.0) <= 0.5

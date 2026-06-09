@@ -40,6 +40,23 @@ class Position:
 
 
 @dataclass
+class PendingOrder:
+    """A whale retest limit order: buy only if price pulls back to the spike close
+    within the expiry window. Created by the scanner, filled/expired by the tracker."""
+    id: Optional[int]
+    coin_symbol: str
+    coin_name: str
+    limit_price: float
+    created_at: datetime
+    expires_at: datetime
+    exchange: Optional[str] = None
+    stop_pct: Optional[float] = None
+    trail_pct: Optional[float] = None
+    volume_ratio: float = 0.0
+    thrust_pct: float = 0.0
+
+
+@dataclass
 class PriceTick:
     id: Optional[int]
     position_id: int
@@ -136,6 +153,19 @@ class Storage:
                     price REAL NOT NULL,
                     checked_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS pending_orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    coin_symbol TEXT NOT NULL,
+                    coin_name TEXT NOT NULL,
+                    limit_price REAL NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    exchange TEXT,
+                    stop_pct REAL,
+                    trail_pct REAL,
+                    volume_ratio REAL NOT NULL DEFAULT 0,
+                    thrust_pct REAL NOT NULL DEFAULT 0
+                );
                 CREATE TABLE IF NOT EXISTS coin_scan_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     coin_symbol TEXT NOT NULL,
@@ -200,6 +230,38 @@ class Storage:
                 "SELECT * FROM positions ORDER BY entry_at DESC LIMIT ?", (limit,)
             ).fetchall()
             return [_position_from_row(r) for r in rows]
+
+    def save_pending_order(self, po: PendingOrder) -> PendingOrder:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO pending_orders (coin_symbol, coin_name, limit_price, created_at, "
+                "expires_at, exchange, stop_pct, trail_pct, volume_ratio, thrust_pct) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (po.coin_symbol, po.coin_name, po.limit_price, _dts(po.created_at),
+                 _dts(po.expires_at), po.exchange, po.stop_pct, po.trail_pct,
+                 po.volume_ratio, po.thrust_pct),
+            )
+            return PendingOrder(**{**po.__dict__, "id": cur.lastrowid})
+
+    def get_pending_orders(self) -> list[PendingOrder]:
+        with self._conn() as conn:
+            rows = conn.execute("SELECT * FROM pending_orders ORDER BY created_at").fetchall()
+            return [PendingOrder(
+                id=r["id"], coin_symbol=r["coin_symbol"], coin_name=r["coin_name"],
+                limit_price=r["limit_price"], created_at=_dt(r["created_at"]),
+                expires_at=_dt(r["expires_at"]), exchange=r["exchange"],
+                stop_pct=r["stop_pct"], trail_pct=r["trail_pct"],
+                volume_ratio=r["volume_ratio"], thrust_pct=r["thrust_pct"],
+            ) for r in rows]
+
+    def has_pending_order(self, coin_symbol: str) -> bool:
+        with self._conn() as conn:
+            return conn.execute("SELECT 1 FROM pending_orders WHERE coin_symbol=?",
+                                (coin_symbol,)).fetchone() is not None
+
+    def delete_pending_order(self, order_id: int) -> None:
+        with self._conn() as conn:
+            conn.execute("DELETE FROM pending_orders WHERE id=?", (order_id,))
 
     def last_exit(self, coin_symbol: str) -> Optional[tuple[str, datetime]]:
         """(outcome, exit_at) of the coin's most recently closed position, or None.

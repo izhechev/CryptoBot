@@ -84,6 +84,10 @@ whale:
                                 # variant lost 0.5-1.1%/trade; regime-obedient whales were the
                                 # only near-breakeven config. Flip back to true for action-over-EV.
   volume_multiple: 5.0          # 5x beat 4x and 3x in every sweep pairing
+  entry_mode: retest            # SWEEP v2: retest+obedient+5x was the ONLY green whale
+                                # config (100% win, +2.0%/trade net; n=4 — thin sample).
+                                # "chase" = old buy-at-market behavior.
+  retest_wait_candles: 8        # the pullback limit stays working this many 15m candles
   price_thrust_pct: 3.0         # price up >= 3% over the thrust lookback
   max_thrust_pct: 18            # reject if thrust >= this % over the lookback (blow-off top: DEGO/RAD)
   thrust_lookback: 3            # number of candles for the price-thrust window

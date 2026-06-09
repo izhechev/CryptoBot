@@ -184,3 +184,47 @@ async def test_unarmed_position_still_books_roi(tracker, db):
     tracker._gecko.fetch_prices = AsyncMock(return_value={"FADE": 105.0})
     await tracker.run_once()
     assert db.get_all_positions()[0].outcome == "win"
+
+
+def make_pending(db: Storage, symbol: str, limit: float, expired: bool = False):
+    from backend.storage import PendingOrder
+    now = datetime.now(timezone.utc)
+    return db.save_pending_order(PendingOrder(
+        id=None, coin_symbol=symbol, coin_name=symbol, limit_price=limit,
+        created_at=now - timedelta(hours=3 if expired else 0),
+        expires_at=now + timedelta(hours=-1 if expired else 2),
+        exchange="kucoin", stop_pct=6.0, trail_pct=4.0,
+        volume_ratio=6.0, thrust_pct=5.0,
+    ))
+
+
+@pytest.mark.asyncio
+async def test_retest_pending_fills_on_pullback(tracker, db):
+    """Price pulls back to the limit -> position opens at the live price with the
+    pending order's stop/trail; the pending order is consumed."""
+    make_pending(db, "RTS", limit=1.00)
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"RTS": 0.99})
+    await tracker.run_once()
+    assert db.has_open_position("RTS", strategy="whale")
+    assert db.get_pending_orders() == []
+    pos = db.get_open_positions()[0]
+    assert pos.entry_price == pytest.approx(0.99)
+    assert pos.stop_pct == pytest.approx(6.0)
+
+
+@pytest.mark.asyncio
+async def test_retest_pending_waits_above_limit(tracker, db):
+    make_pending(db, "RTS", limit=1.00)
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"RTS": 1.05})
+    await tracker.run_once()
+    assert not db.has_open_position("RTS", strategy="whale")
+    assert len(db.get_pending_orders()) == 1  # still working
+
+
+@pytest.mark.asyncio
+async def test_retest_pending_expires(tracker, db):
+    make_pending(db, "RTS", limit=1.00, expired=True)
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"RTS": 0.99})
+    await tracker.run_once()
+    assert not db.has_open_position("RTS", strategy="whale")
+    assert db.get_pending_orders() == []  # expired and removed, not filled

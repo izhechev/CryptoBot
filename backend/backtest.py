@@ -58,6 +58,22 @@ class SimTrade:
     outcome: str               # win | loss | timeout
     pnl_pct: float             # gross
     held_min: float
+    cost_pct: float = 0.5      # round-trip fees + liquidity-scaled slippage
+
+
+def _trade_cost_pct(df: pd.DataFrame, entry_idx: int, notional: float) -> float:
+    """Round-trip cost: exchange fees + slippage scaled by how much of the coin's
+    typical candle volume our order consumes. A $1k order in a $10k/candle coin
+    moves the price; in a $1M/candle coin it doesn't. (Flat slippage flatters
+    exactly the thin coins where whales live.)"""
+    lo = max(0, entry_idx - 20)
+    usd_vol = float((df["close"].iloc[lo:entry_idx] * df["volume"].iloc[lo:entry_idx]).mean() or 0)
+    if usd_vol <= 0:
+        slip = 2.0
+    else:
+        participation = notional / usd_vol
+        slip = min(2.0, max(0.05, participation * 25.0))  # % per side
+    return 2 * (_FEE_PCT + slip)
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -185,6 +201,7 @@ def simulate_coin(cfg: Config, symbol: str, df: pd.DataFrame,
                 entry_price=entry_price, exit_price=exit_price, outcome=outcome,
                 pnl_pct=(exit_price - entry_price) / entry_price * 100,
                 held_min=(exit_idx - entry_idx) * 15,
+                cost_pct=_trade_cost_pct(df, entry_idx, cfg.notional_size),
             ))
             busy_until[strategy] = exit_idx
 
@@ -264,7 +281,6 @@ async def _fetch_history(md: MarketData, symbol: str, candles: int) -> Optional[
 
 
 def _report(trades: list[SimTrade], costs: bool) -> None:
-    cost_pct = 2 * (_FEE_PCT + _SLIPPAGE_PCT) if costs else 0.0
     for strategy in ("whale", "standard"):
         rows = [t for t in trades if t.strategy == strategy]
         print(f"\n=== {strategy.upper()}  ({len(rows)} trades) ===")
@@ -274,7 +290,10 @@ def _report(trades: list[SimTrade], costs: bool) -> None:
         wins = [t for t in rows if t.outcome == "win"]
         losses = [t for t in rows if t.outcome == "loss"]
         tos = [t for t in rows if t.outcome == "timeout"]
-        net = [t.pnl_pct - cost_pct for t in rows]
+        net = [t.pnl_pct - (t.cost_pct if costs else 0.0) for t in rows]
+        if costs:
+            print(f"  avg round-trip cost: {statistics.mean(t.cost_pct for t in rows):.2f}% "
+                  f"(liquidity-scaled slippage + fees)")
         gross_sum = sum(t.pnl_pct for t in rows)
         gains = sum(t.pnl_pct for t in rows if t.pnl_pct > 0)
         pains = -sum(t.pnl_pct for t in rows if t.pnl_pct < 0)
@@ -350,6 +369,7 @@ def simulate_spot_from_scores(cfg: Config, symbol: str, df: pd.DataFrame,
             entry_price=entry_price, exit_price=exit_price, outcome=outcome,
             pnl_pct=(exit_price - entry_price) / entry_price * 100,
             held_min=(exit_idx - entry_idx) * 15,
+            cost_pct=_trade_cost_pct(df, entry_idx, cfg.notional_size),
         ))
         busy_until = exit_idx
     return trades
@@ -366,7 +386,6 @@ def run_spot_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
         if n % 10 == 0:
             print(f"  ...{n}/{len(histories)} coins scored")
 
-    cost = 2 * (_FEE_PCT + _SLIPPAGE_PCT)
     keys = list(_SPOT_SWEEP_GRID)
     combos = list(itertools.product(*_SPOT_SWEEP_GRID.values()))
     rows = []
@@ -379,7 +398,7 @@ def run_spot_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
             rows.append((combo, 0, 0.0, 0.0))
             continue
         wins = sum(1 for t in trades if t.outcome == "win")
-        net = statistics.mean(t.pnl_pct - cost for t in trades)
+        net = statistics.mean(t.pnl_pct - t.cost_pct for t in trades)
         rows.append((combo, len(trades), wins / len(trades) * 100, net))
     rows.sort(key=lambda r: r[3], reverse=True)
     print(f"\n{'bar':>5} {'bear_bar':>8} {'trail_arm':>9} {'atr_stop':>8} | {'trades':>6} {'win%':>5} {'net_exp':>8}")
@@ -392,7 +411,6 @@ def run_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
               regime: Optional[pd.Series]) -> None:
     """Grid-search whale parameters over cached history (no network). Ranks each
     combo by net expectancy per trade — evidence-based tuning, not vibes."""
-    cost = 2 * (_FEE_PCT + _SLIPPAGE_PCT)
     rows = []
     keys = list(_SWEEP_GRID)
     combos = list(itertools.product(*_SWEEP_GRID.values()))
@@ -406,7 +424,7 @@ def run_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
             rows.append((combo, 0, 0.0, 0.0))
             continue
         wins = sum(1 for t in trades if t.outcome == "win")
-        net = statistics.mean(t.pnl_pct - cost for t in trades)
+        net = statistics.mean(t.pnl_pct - t.cost_pct for t in trades)
         rows.append((combo, len(trades), wins / len(trades) * 100, net))
     rows.sort(key=lambda r: r[3], reverse=True)
     print(f"\n{'entry':>7} {'bypass':>6} {'vol_mult':>8} | {'trades':>6} {'win%':>5} {'net_exp':>8}")
@@ -421,7 +439,7 @@ def run_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
         ft.extend(simulate_coin(fixed, sym, df, regime, strategies="whale"))
     if ft:
         w = sum(1 for t in ft if t.outcome == "win")
-        net = statistics.mean(t.pnl_pct - cost for t in ft)
+        net = statistics.mean(t.pnl_pct - t.cost_pct for t in ft)
         print(f"\n[baseline] fixed TP+10/SL-10, no trail: "
               f"{len(ft)} trades, {w / len(ft) * 100:.0f}% win, {net:+.2f}% net/trade")
     print("\n(net_exp = average net P&L per trade after fees+slippage; higher is better)")

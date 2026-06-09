@@ -2,10 +2,10 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 from backend.config import Config
-from backend.storage import Storage
+from backend.storage import Storage, PendingOrder
 from backend.cmc_client import CmcClient, CoinListing
 from backend.market_data import MarketData
 from backend.indicators import compute_indicators, atr_pct
@@ -300,6 +300,27 @@ class Scanner:
         entry_price = await self._entry_price(coin)
         if entry_price is None:
             return False
+
+        if self._cfg.whale_entry_mode == "retest":
+            # Don't chase: arm a limit at the spike candle's close and let the
+            # tracker fill it only if price pulls back (sweep: the one green config).
+            if self._db.has_pending_order(coin.symbol) or whale.thrust_close <= 0:
+                return False
+            stop_pct, trail_pct = self._exit_levels(df)
+            now = datetime.now(timezone.utc)
+            self._db.save_pending_order(PendingOrder(
+                id=None, coin_symbol=coin.symbol, coin_name=coin.name,
+                limit_price=whale.thrust_close, created_at=now,
+                expires_at=now + timedelta(minutes=15 * self._cfg.whale_retest_wait_candles),
+                exchange=self._market.exchange_id_for(coin.symbol),
+                stop_pct=stop_pct, trail_pct=trail_pct,
+                volume_ratio=whale.volume_ratio, thrust_pct=whale.price_thrust_pct,
+            ))
+            logger.info("Whale retest armed: %s limit=%s (vol=%.1fx thrust=+%.1f%%)",
+                        coin.symbol, fmt_price(whale.thrust_close),
+                        whale.volume_ratio, whale.price_thrust_pct)
+            return False  # not a fill yet — the tracker fills or expires it
+
         event = self._signal_engine.emit_whale(
             coin_symbol=coin.symbol,
             coin_name=coin.name,
