@@ -124,3 +124,44 @@ def test_simulate_spot_respects_bear_bar(cfg):
     score = (cfg.signal_threshold + cfg.bear_signal_threshold) / 2
     trades = simulate_spot_from_scores(cfg, "X", df, [(_WARMUP, score, False)])
     assert trades == []
+
+
+def _spiked_df(n_extra: int = 70):
+    n = _WARMUP + n_extra
+    df = candles(n)
+    s = _WARMUP + 1
+    closes = df.columns.get_loc("close")
+    df.iloc[s - 3, closes] = 100.0
+    df.iloc[s - 2, closes] = 100.0
+    df.iloc[s - 1, closes] = 101.0
+    df.iloc[s, closes] = 105.0
+    for j in range(s + 1, n):
+        df.iloc[j, closes] = 105.2
+    df.iloc[s, df.columns.get_loc("volume")] = 5_000_000.0
+    return df, s
+
+
+def test_retest_entry_fills_on_pullback(cfg):
+    """Retest mode: fills at the spike close when a later low touches it."""
+    from dataclasses import replace
+    df, s = _spiked_df()
+    lows = df.columns.get_loc("low")
+    # base lows are close*0.99-ish via candles(); ensure a touch below 105 exists
+    df.iloc[s + 6, lows] = 104.5
+    c = replace(cfg, whale_entry_mode="retest")
+    trades = [t for t in simulate_coin(c, "T", df, None, strategies="whale")]
+    assert len(trades) == 1
+    assert trades[0].entry_price == pytest.approx(105.0)  # the limit, not a chase
+
+
+def test_retest_entry_skips_when_never_filled(cfg):
+    """No pullback to the limit within the wait window -> no trade (and no re-arm
+    spam on the same spike)."""
+    from dataclasses import replace
+    df, s = _spiked_df()
+    lows = df.columns.get_loc("low")
+    for j in range(s + 1, len(df)):
+        df.iloc[j, lows] = 106.0  # never touches 105
+    c = replace(cfg, whale_entry_mode="retest")
+    trades = [t for t in simulate_coin(c, "T", df, None, strategies="whale")]
+    assert trades == []

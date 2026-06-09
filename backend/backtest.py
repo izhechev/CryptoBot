@@ -146,21 +146,36 @@ def simulate_coin(cfg: Config, symbol: str, df: pd.DataFrame,
         ts = df.index[i]
         bullish = _regime_at(regime, ts) if regime is not None else True
 
-        candidates: list[str] = []
+        # (strategy, entry_idx, entry_price) — entry resolved per strategy/mode
+        candidates: list[tuple[str, int, float]] = []
         if (strategies in ("both", "whale") and i >= busy_until["whale"]
                 and (bullish or cfg.whale_bypass_regime)):
-            if detect_whale(window, cfg) is not None:
-                candidates.append("whale")
+            sig = detect_whale(window, cfg)
+            if sig is not None:
+                if cfg.whale_entry_mode == "retest":
+                    # Limit order at the spike candle's close: trade only if price
+                    # pulls back to it within the wait window (better entry, fewer fills).
+                    limit = sig.thrust_close
+                    fill = None
+                    for j in range(i + 1, min(i + 1 + cfg.whale_retest_wait_candles, len(df))):
+                        if float(df["low"].iloc[j]) <= limit:
+                            fill = j
+                            break
+                    if fill is not None:
+                        candidates.append(("whale", fill, limit))
+                    else:
+                        # never filled — don't keep re-arming on the same spike
+                        busy_until["whale"] = i + cfg.whale_retest_wait_candles
+                else:
+                    candidates.append(("whale", i + 1, float(df["open"].iloc[i + 1])))
         if strategies in ("both", "spot") and i >= busy_until["standard"]:
             ind = compute_indicators(window, cfg, df_htf=_htf(window))
             bar = cfg.signal_threshold if bullish else cfg.bear_signal_threshold
             if ind.total >= bar:
-                candidates.append("standard")
+                candidates.append(("standard", i + 1, float(df["open"].iloc[i + 1])))
 
-        for strategy in candidates:
-            entry_idx = i + 1
-            entry_price = float(df["open"].iloc[entry_idx])
-            if entry_price <= 0:
+        for strategy, entry_idx, entry_price in candidates:
+            if entry_price <= 0 or entry_idx >= len(df):
                 continue
             stop_pct, trail_pct = _exit_levels(cfg, window)
             exit_idx, exit_price, outcome = simulate_exit(
@@ -280,13 +295,12 @@ def _report(trades: list[SimTrade], costs: bool) -> None:
               f"worst: {worst.symbol} {worst.pnl_pct:+.1f}% ({worst.held_min:.0f}m)")
 
 
-# Sweep grid: the whale parameters the data implicated, tested combinatorially —
-# including whether whales should respect the BTC regime at all.
+# Sweep grid v2: entry style is the open question now (trail/stop settled by the
+# last sweep); still re-testing regime obedience and the volume floor alongside it.
 _SWEEP_GRID = {
+    "whale_entry_mode": ["chase", "retest"],
     "whale_bypass_regime": [True, False],
     "whale_volume_multiple": [3.0, 4.0, 5.0],
-    "trail_arm_pct": [4.0, 6.0, 8.0],
-    "atr_stop_multiplier": [1.5, 2.0, 2.5],
 }
 
 # Spot sweep: entry bars + exit shape. Indicator scores are precomputed once per
@@ -395,9 +409,21 @@ def run_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
         net = statistics.mean(t.pnl_pct - cost for t in trades)
         rows.append((combo, len(trades), wins / len(trades) * 100, net))
     rows.sort(key=lambda r: r[3], reverse=True)
-    print(f"\n{'bypass':>6} {'vol_mult':>8} {'trail_arm':>9} {'atr_stop':>8} | {'trades':>6} {'win%':>5} {'net_exp':>8}")
+    print(f"\n{'entry':>7} {'bypass':>6} {'vol_mult':>8} | {'trades':>6} {'win%':>5} {'net_exp':>8}")
     for combo, n, wr, net in rows:
-        print(f"{str(combo[0]):>6} {combo[1]:>8} {combo[2]:>9} {combo[3]:>8} | {n:>6} {wr:>4.0f}% {net:>+7.2f}%")
+        print(f"{combo[0]:>7} {str(combo[1]):>6} {combo[2]:>8} | {n:>6} {wr:>4.0f}% {net:>+7.2f}%")
+
+    # Baseline the perennial question: fixed TP +10% / SL -10%, no trail, no decay.
+    fixed = replace(cfg, whale_roi=[(0.0, 10.0)], stop_pct_min=10.0, stop_pct_max=10.0,
+                    trail_arm_pct=10_000.0)
+    ft: list[SimTrade] = []
+    for sym, df in histories.items():
+        ft.extend(simulate_coin(fixed, sym, df, regime, strategies="whale"))
+    if ft:
+        w = sum(1 for t in ft if t.outcome == "win")
+        net = statistics.mean(t.pnl_pct - cost for t in ft)
+        print(f"\n[baseline] fixed TP+10/SL-10, no trail: "
+              f"{len(ft)} trades, {w / len(ft) * 100:.0f}% win, {net:+.2f}% net/trade")
     print("\n(net_exp = average net P&L per trade after fees+slippage; higher is better)")
 
 

@@ -14,11 +14,12 @@ scan:
 
 scoring:
   pre_filter_threshold: 55       # min technical score before fetching news + calling Gemini
-  signal_threshold: 75           # min total score to fire a MUST-BUY signal
+  signal_threshold: 80           # min total score to fire (SPOT SWEEP: 80 beat 75/70 in
+                                 # every pairing; top combo 70% win, +0.53%/trade net)
   max_price_divergence_pct: 8    # reject if exchange price is >8% off CMC's price (stale/wrong coin)
   pumped_skip_pct: 30            # skip a candidate already up this % over 7 days (RIF/DASH pattern)
   news_veto_threshold: 35        # skip a candidate if grounded news sentiment is below this
-  bear_signal_threshold: 80      # spot fire threshold while BTC is below its 4h trend (vs 75 normally)
+  bear_signal_threshold: 85      # spot bar while BTC is below its 4h trend (sweep winner)
   technical_weight: 0.65
   news_weight: 0.35
   min_volume_24h: 25000          # CMC server-side filter: ~2785 coins (lower = more, thinner coins)
@@ -36,7 +37,8 @@ scoring:
 # chandelier-style exits beat fixed ones by 26-48% profit factor in backtests.
 exits:
   atr_period: 14
-  atr_stop_multiplier: 2.0      # stop distance = 2 x ATR%
+  atr_stop_multiplier: 2.5      # stop distance = 2.5 x ATR% (sweep: 2.5 beat 1.5 in every
+                                # spot row; whales were indifferent across 1.5-2.5)
   stop_pct_min: 4.0
   stop_pct_max: 10.0
   atr_trail_multiplier: 1.5     # trailing give-back = 1.5 x ATR%

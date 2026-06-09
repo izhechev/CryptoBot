@@ -90,6 +90,11 @@ class Config:
     # cooldown the very next scan re-buys the losing trade.
     loss_cooldown_hours: float = 4.0      # after a stop-out, leave the coin alone
     reentry_cooldown_hours: float = 2.0   # after any close, brief pause (no same-spike rebuy)
+    # Whale entry style: "chase" buys at market after confirmation; "retest" places
+    # a limit at the spike candle's close and only trades if price pulls back to it
+    # (research: the pullback-to-breakout-level entry is the highest-quality one).
+    whale_entry_mode: str = "chase"
+    whale_retest_wait_candles: int = 8    # how long the retest limit stays working
 
 
 def _parse_roi(raw: dict | None, default_pct: float) -> list:
@@ -165,6 +170,8 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         trail_arm_pct=float(exits.get("trail_arm_pct", 6.0)),
         loss_cooldown_hours=float(exits.get("loss_cooldown_hours", 4.0)),
         reentry_cooldown_hours=float(exits.get("reentry_cooldown_hours", 2.0)),
+        whale_entry_mode=str(whale.get("entry_mode", "chase")),
+        whale_retest_wait_candles=int(whale.get("retest_wait_candles", 8)),
         tracking_interval_seconds=int(tracking.get("interval_seconds", 60)),
         tracking_timeframe=tracking.get("candle_timeframe", "1m"),
         tracking_candle_limit=int(tracking.get("candle_limit", 60)),
