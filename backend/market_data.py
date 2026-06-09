@@ -97,6 +97,30 @@ class MarketData:
         """Fetch higher-timeframe (e.g. 4h) candles for the trend confluence filter."""
         return await self._fetch(symbol, quote, self._cfg.htf_timeframe, self._cfg.htf_candle_limit)
 
+    async def fetch_book_stats(self, symbol: str, quote: str = "USDT",
+                               exchange_id: Optional[str] = None,
+                               depth_pct: float = 2.0) -> Optional[tuple[float, float]]:
+        """(spread_pct, bid/ask depth ratio within ±depth_pct of mid) from the live
+        order book. Ask-heavy books precede down-moves and wide spreads flag danger
+        + slippage — both are entry vetoes. None on any failure (callers fail open)."""
+        ex = self._resolve(symbol, quote, exchange_id)
+        if ex is None:
+            return None
+        try:
+            ob = await ex.fetch_order_book(f"{symbol}/{quote}", limit=20)
+        except Exception:
+            return None
+        bids, asks = ob.get("bids") or [], ob.get("asks") or []
+        if not bids or not asks or bids[0][0] <= 0 or asks[0][0] <= 0:
+            return None
+        mid = (bids[0][0] + asks[0][0]) / 2
+        spread_pct = (asks[0][0] - bids[0][0]) / mid * 100
+        lo, hi = mid * (1 - depth_pct / 100), mid * (1 + depth_pct / 100)
+        bid_depth = sum(p * a for p, a in bids if p >= lo)
+        ask_depth = sum(p * a for p, a in asks if p <= hi)
+        ratio = (bid_depth / ask_depth) if ask_depth > 0 else 10.0
+        return spread_pct, ratio
+
     async def fetch_current_price(self, symbol: str, quote: str = "USDT",
                                   exchange_id: Optional[str] = None) -> Optional[float]:
         """Fetch current last price. None if no exchange lists the pair live.

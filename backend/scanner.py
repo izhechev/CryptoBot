@@ -119,6 +119,25 @@ class Scanner:
             return True
         return False
 
+    async def _book_ok(self, coin: CoinListing) -> bool:
+        """Order-book entry gate: veto on a wide spread (danger + slippage) or an
+        ask-heavy book (depth imbalance precedes down-moves). Fails open."""
+        if not self._cfg.book_gate:
+            return True
+        stats = await self._market.fetch_book_stats(coin.symbol)
+        if stats is None:
+            return True
+        spread_pct, ratio = stats
+        if spread_pct > self._cfg.max_spread_pct:
+            logger.debug("  %s: spread %.2f%% > %.2f%% — book gate skip",
+                         coin.symbol, spread_pct, self._cfg.max_spread_pct)
+            return False
+        if ratio < self._cfg.min_bid_ask_ratio:
+            logger.debug("  %s: ask-heavy book (bid/ask depth %.2f < %.2f) — book gate skip",
+                         coin.symbol, ratio, self._cfg.min_bid_ask_ratio)
+            return False
+        return True
+
     def _spot_threshold(self) -> float:
         """Fire threshold for spot: normal in a bullish regime, exceptional-only
         while BTC is below its 4h trend (a bar, not a closed door)."""
@@ -207,6 +226,8 @@ class Scanner:
             return result
         if not self._can_open(respect_regime=False) or self._in_cooldown(coin.symbol):
             return result
+        if not await self._book_ok(coin):  # cheap, before the Gemini call
+            return result
 
         catalyst = self._news.grounded_catalyst(coin.symbol, coin.name)
         result.news_score = catalyst.sentiment
@@ -283,6 +304,8 @@ class Scanner:
         if not self._can_open(respect_regime=not self._cfg.whale_bypass_regime):
             return False
         if self._in_cooldown(coin.symbol):
+            return False
+        if not await self._book_ok(coin):  # cheap, before gecko/Gemini calls
             return False
         # Cheap check first: skip a coin already extended over 7 days (RIF/DASH pattern).
         change_7d = await self._gecko.fetch_change_7d(coin.symbol, coin.name)

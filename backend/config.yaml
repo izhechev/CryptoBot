@@ -75,6 +75,14 @@ tracking:
   candle_timeframe: "1m"        # timeframe whose high/low is scanned for TP/SL touches
   candle_limit: 60
 
+# Order-book entry gate (live only — books have no history to backtest): veto an
+# entry when the spread is wide (danger + slippage) or the book is ask-heavy
+# (research: ask-dominant depth precedes down-moves). Fails open on read errors.
+book:
+  enabled: true
+  max_spread_pct: 1.5
+  min_bid_ask_ratio: 0.75
+
 # Whale-ride strategy: catch the footprint of large players — an abnormal volume
 # surge plus a sharp price thrust in the same window. Tracked as a separate
 # strategy with its own positions, exits, and win/loss stats.

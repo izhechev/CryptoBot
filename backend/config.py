@@ -95,6 +95,11 @@ class Config:
     # (research: the pullback-to-breakout-level entry is the highest-quality one).
     whale_entry_mode: str = "chase"
     whale_retest_wait_candles: int = 8    # how long the retest limit stays working
+    # Order-book entry gate: ask-heavy books precede down-moves; wide spreads mean
+    # danger + slippage. Both veto an entry. Fails open if the book can't be read.
+    book_gate: bool = True
+    max_spread_pct: float = 1.5           # skip if bid-ask spread is wider than this
+    min_bid_ask_ratio: float = 0.75       # skip if bid depth / ask depth is below this
 
 
 def _parse_roi(raw: dict | None, default_pct: float) -> list:
@@ -115,6 +120,7 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
     whale = raw.get("whale", {})
     tracking = raw.get("tracking", {})
     exits = raw.get("exits", {})
+    book = raw.get("book", {})
 
     return Config(
         scan_interval_minutes=scan["interval_minutes"],
@@ -172,6 +178,9 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         reentry_cooldown_hours=float(exits.get("reentry_cooldown_hours", 2.0)),
         whale_entry_mode=str(whale.get("entry_mode", "chase")),
         whale_retest_wait_candles=int(whale.get("retest_wait_candles", 8)),
+        book_gate=bool(book.get("enabled", True)),
+        max_spread_pct=float(book.get("max_spread_pct", 1.5)),
+        min_bid_ask_ratio=float(book.get("min_bid_ask_ratio", 0.75)),
         tracking_interval_seconds=int(tracking.get("interval_seconds", 60)),
         tracking_timeframe=tracking.get("candle_timeframe", "1m"),
         tracking_candle_limit=int(tracking.get("candle_limit", 60)),

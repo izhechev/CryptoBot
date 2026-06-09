@@ -102,3 +102,24 @@ async def test_routes_to_correct_exchange(market_data):
     assert price == 9.99
     kucoin.fetch_ticker.assert_called_once_with("FOO/USDT")
     binance.fetch_ticker.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fetch_book_stats_computes_spread_and_imbalance(market_data):
+    ex = AsyncMock()
+    ex.fetch_order_book = AsyncMock(return_value={
+        "bids": [[99.0, 10.0], [98.5, 10.0]],   # ~$1,975 bid depth
+        "asks": [[101.0, 5.0], [101.5, 5.0]],   # ~$1,012 ask depth
+    })
+    route(market_data, "BTC/USDT", ex)
+    spread, ratio = await market_data.fetch_book_stats("BTC", "USDT")
+    assert spread == pytest.approx(2.0, abs=0.1)   # (101-99)/100 = 2%
+    assert ratio == pytest.approx(1.95, abs=0.1)   # bid-heavy
+
+
+@pytest.mark.asyncio
+async def test_fetch_book_stats_none_on_error(market_data):
+    ex = AsyncMock()
+    ex.fetch_order_book = AsyncMock(side_effect=Exception("boom"))
+    route(market_data, "BTC/USDT", ex)
+    assert await market_data.fetch_book_stats("BTC", "USDT") is None

@@ -39,6 +39,7 @@ def scanner(cfg, db):
     s._cmc = AsyncMock()
     s._market = AsyncMock()
     s._market.exchange_id_for = MagicMock(return_value="binance")  # sync method
+    s._market.fetch_book_stats = AsyncMock(return_value=(0.1, 1.5))  # healthy book
     s._gecko = AsyncMock()
     s._gecko.fetch_price = AsyncMock(return_value=None)  # fall back to CMC price
     s._gecko.fetch_change_7d = AsyncMock(return_value=0.0)  # not pumped
@@ -298,3 +299,41 @@ async def test_cooldown_blocks_reentry_after_loss(scanner, db):
                return_value=IndicatorScores(0.0, 0.0, 0.0, 0.0, 0.0, False, 10.0)):
         await scanner.run_once()
     assert not db.has_open_position("PEPE", strategy="whale")
+
+
+@pytest.mark.asyncio
+async def test_book_gate_vetoes_ask_heavy_book(scanner, db):
+    """Ask-dominant order book (bid/ask depth < min ratio) -> whale entry vetoed."""
+    _whale_setup(scanner)
+    scanner._market.fetch_book_stats = AsyncMock(return_value=(0.2, 0.4))  # ask wall
+    with patch("backend.scanner.detect_whale", return_value=WhaleSignal(5.0, 4.5)), \
+         patch("backend.scanner.compute_indicators",
+               return_value=IndicatorScores(0.0, 0.0, 0.0, 0.0, 0.0, False, 10.0)):
+        await scanner.run_once()
+    assert not db.has_open_position("PEPE", strategy="whale")
+    assert db.get_pending_orders() == []
+
+
+@pytest.mark.asyncio
+async def test_book_gate_vetoes_wide_spread(scanner, db):
+    _whale_setup(scanner)
+    scanner._market.fetch_book_stats = AsyncMock(return_value=(3.0, 1.5))  # 3% spread
+    with patch("backend.scanner.detect_whale", return_value=WhaleSignal(5.0, 4.5)), \
+         patch("backend.scanner.compute_indicators",
+               return_value=IndicatorScores(0.0, 0.0, 0.0, 0.0, 0.0, False, 10.0)):
+        await scanner.run_once()
+    assert not db.has_open_position("PEPE", strategy="whale")
+    assert db.get_pending_orders() == []
+
+
+@pytest.mark.asyncio
+async def test_book_gate_fails_open_when_unreadable(scanner, db):
+    """No book data -> gate must NOT block (fail-open like every external check)."""
+    _whale_setup(scanner)
+    scanner._market.fetch_book_stats = AsyncMock(return_value=None)
+    with patch("backend.scanner.detect_whale", return_value=WhaleSignal(5.0, 4.5)), \
+         patch("backend.scanner.compute_indicators",
+               return_value=IndicatorScores(0.0, 0.0, 0.0, 0.0, 0.0, False, 10.0)):
+        await scanner.run_once()
+    # retest mode is default config in tests? conftest uses chase -> opens position
+    assert db.has_open_position("PEPE", strategy="whale") or len(db.get_pending_orders()) == 1
