@@ -93,7 +93,7 @@ async def test_bear_regime_allows_exceptional_spot(scanner, db):
 
 @pytest.mark.asyncio
 async def test_bear_regime_blocks_ordinary_spot(scanner, db):
-    """Same bear regime, but a merely-good score (>=75, <85) stays blocked."""
+    """Same bear regime, but a merely-good score (>=75, < bear bar) stays blocked."""
     scanner._market_regime_ok = AsyncMock(return_value=False)
     scanner._cmc.fetch_all_coins = AsyncMock(return_value=[
         CoinListing(symbol="SOL", name="Solana", price=150.0, volume_24h=5e9, change_24h=5.0)
@@ -102,7 +102,7 @@ async def test_bear_regime_blocks_ordinary_spot(scanner, db):
     scanner._market.fetch_htf_candles = AsyncMock(return_value=make_candle_df(100))
     scanner._market.fetch_current_price = AsyncMock(return_value=150.0)
     with patch("backend.scanner.compute_indicators",
-               return_value=IndicatorScores(30.0, 20.0, 15.0, 15.0, 0.0, True, 80.0)), \
+               return_value=IndicatorScores(30.0, 20.0, 13.0, 15.0, 0.0, True, 78.0)), \
          patch("backend.scanner.detect_whale", return_value=None):
         await scanner.run_once()
     assert len(db.get_recent_signals()) == 0

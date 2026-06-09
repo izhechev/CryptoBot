@@ -33,6 +33,10 @@ class Position:
     # market — never entry-on-binance / exit-on-kucoin. None = legacy / use routing.
     exchange: Optional[str] = None
     coin_name: str = ""  # full name (e.g. "Sonic SVM") for display alongside the ticker
+    # Volatility-scaled exits, computed from ATR at entry. None = config defaults.
+    stop_pct: Optional[float] = None    # stop-loss distance for THIS coin's volatility
+    trail_pct: Optional[float] = None   # trailing give-back once the trade is armed
+    peak_price: Optional[float] = None  # high-water mark while open (trailing reference)
 
 
 @dataclass
@@ -82,6 +86,7 @@ def _position_from_row(r) -> Position:
         exit_price=r["exit_price"], exit_at=_dt(r["exit_at"]),
         outcome=r["outcome"], pnl_pct=r["pnl_pct"], strategy=r["strategy"],
         exchange=r["exchange"], coin_name=(r["coin_name"] or ""),
+        stop_pct=r["stop_pct"], trail_pct=r["trail_pct"], peak_price=r["peak_price"],
     )
 
 
@@ -120,7 +125,10 @@ class Storage:
                     pnl_pct REAL,
                     strategy TEXT NOT NULL DEFAULT 'standard',
                     exchange TEXT,
-                    coin_name TEXT
+                    coin_name TEXT,
+                    stop_pct REAL,
+                    trail_pct REAL,
+                    peak_price REAL
                 );
                 CREATE TABLE IF NOT EXISTS price_ticks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -140,10 +148,10 @@ class Storage:
             """)
             # Migration: add positions.exchange to DBs created before it existed.
             cols = [r[1] for r in conn.execute("PRAGMA table_info(positions)").fetchall()]
-            if "exchange" not in cols:
-                conn.execute("ALTER TABLE positions ADD COLUMN exchange TEXT")
-            if "coin_name" not in cols:
-                conn.execute("ALTER TABLE positions ADD COLUMN coin_name TEXT")
+            for col, ddl in (("exchange", "TEXT"), ("coin_name", "TEXT"),
+                             ("stop_pct", "REAL"), ("trail_pct", "REAL"), ("peak_price", "REAL")):
+                if col not in cols:
+                    conn.execute(f"ALTER TABLE positions ADD COLUMN {col} {ddl}")
 
     def save_signal(self, sig: Signal) -> Signal:
         with self._conn() as conn:
@@ -171,11 +179,11 @@ class Storage:
         with self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO positions (signal_id, coin_symbol, entry_price, entry_at, "
-                "exit_price, exit_at, outcome, pnl_pct, strategy, exchange, coin_name) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "exit_price, exit_at, outcome, pnl_pct, strategy, exchange, coin_name, "
+                "stop_pct, trail_pct, peak_price) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (pos.signal_id, pos.coin_symbol, pos.entry_price, _dts(pos.entry_at),
                  pos.exit_price, _dts(pos.exit_at), pos.outcome, pos.pnl_pct, pos.strategy,
-                 pos.exchange, pos.coin_name),
+                 pos.exchange, pos.coin_name, pos.stop_pct, pos.trail_pct, pos.peak_price),
             )
             return Position(**{**pos.__dict__, "id": cur.lastrowid})
 
@@ -192,6 +200,12 @@ class Storage:
                 "SELECT * FROM positions ORDER BY entry_at DESC LIMIT ?", (limit,)
             ).fetchall()
             return [_position_from_row(r) for r in rows]
+
+    def update_position_peak(self, position_id: int, peak_price: float) -> None:
+        """Persist a new high-water mark for an open position (trailing reference)."""
+        with self._conn() as conn:
+            conn.execute("UPDATE positions SET peak_price=? WHERE id=?",
+                         (peak_price, position_id))
 
     def close_position(self, position_id: int, exit_price: float,
                        exit_at: datetime, outcome: str, pnl_pct: float) -> None:

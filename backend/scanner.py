@@ -7,7 +7,7 @@ from backend.config import Config
 from backend.storage import Storage
 from backend.cmc_client import CmcClient, CoinListing
 from backend.market_data import MarketData
-from backend.indicators import compute_indicators
+from backend.indicators import compute_indicators, atr_pct
 from backend.scoring import compute_total_score
 from backend.news import NewsClient
 from backend.signals import SignalEngine
@@ -103,6 +103,17 @@ class Scanner:
         while BTC is below its 4h trend (a bar, not a closed door)."""
         return self._cfg.signal_threshold if self._regime_bullish else self._cfg.bear_signal_threshold
 
+    def _exit_levels(self, df) -> tuple[Optional[float], Optional[float]]:
+        """Volatility-scaled (stop_pct, trail_pct) for THIS coin, from its ATR at
+        entry — clamped so a wild micro-cap isn't noise-stopped and a calm coin
+        isn't given a barn-door stop. None -> config defaults apply."""
+        a = atr_pct(df, self._cfg.atr_period)
+        if a is None:
+            return None, None
+        stop = min(max(a * self._cfg.atr_stop_multiplier, self._cfg.stop_pct_min), self._cfg.stop_pct_max)
+        trail = min(max(a * self._cfg.atr_trail_multiplier, self._cfg.trail_pct_min), self._cfg.trail_pct_max)
+        return round(stop, 2), round(trail, 2)
+
     def _log_scan_summary(self, results: list[_CoinResult]) -> None:
         """One INFO summary per scan: counts + closest-to-firing coins. This is the
         line that explains an empty board — see how high anything actually scored."""
@@ -150,7 +161,7 @@ class Scanner:
         if self._cfg.whale_enabled:
             whale = detect_whale(df, self._cfg)
             if whale is not None:
-                result.whale_fired = await self._open_whale(coin, whale)
+                result.whale_fired = await self._open_whale(coin, whale, df)
 
         # --- Standard strategy: indicators + higher-timeframe confluence ---
         df_htf = await self._market.fetch_htf_candles(coin.symbol)
@@ -211,8 +222,10 @@ class Scanner:
         if event is None:
             return result
 
+        stop_pct, trail_pct = self._exit_levels(df)
         self._trader.open_position(event, entry_price,
-                                   self._market.exchange_id_for(coin.symbol))
+                                   self._market.exchange_id_for(coin.symbol),
+                                   stop_pct=stop_pct, trail_pct=trail_pct)
         result.fired = True
         logger.info("Signal: %s score=%.1f entry=%s", coin.symbol, total_score, fmt_price(entry_price))
         if self._notifier:
@@ -242,7 +255,7 @@ class Scanner:
         # Trade at the CoinGecko price; fall back to the exchange only if Gecko is blank.
         return gecko_price if (gecko_price and gecko_price > 0) else exchange_price
 
-    async def _open_whale(self, coin: CoinListing, whale) -> bool:
+    async def _open_whale(self, coin: CoinListing, whale, df) -> bool:
         # Whales can bypass the (multi-day) BTC regime gate — they're short-hold and
         # already require the coin itself to be in an uptrend. Still respect the cap.
         if not self._can_open(respect_regime=not self._cfg.whale_bypass_regime):
@@ -271,8 +284,10 @@ class Scanner:
         )
         if event is None:
             return False
+        stop_pct, trail_pct = self._exit_levels(df)
         self._trader.open_position(event, entry_price,
-                                   self._market.exchange_id_for(coin.symbol))
+                                   self._market.exchange_id_for(coin.symbol),
+                                   stop_pct=stop_pct, trail_pct=trail_pct)
         logger.info("Whale: %s vol=%.1fx thrust=+%.1f%% entry=%s",
                     coin.symbol, whale.volume_ratio, whale.price_thrust_pct, fmt_price(entry_price))
         if self._notifier:

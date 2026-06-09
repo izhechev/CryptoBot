@@ -50,6 +50,11 @@ class Tracker:
                 pnl_pct = (price - pos.entry_price) / pos.entry_price * 100
                 updates.append({"id": pos.id, "current_price": price, "pnl_pct": round(pnl_pct, 4)})
 
+                # Maintain the high-water mark — the trailing exit's reference.
+                if price > (pos.peak_price or pos.entry_price):
+                    pos.peak_price = price
+                    self._db.update_position_peak(pos.id, price)
+
                 outcome = self._trader.check_position(pos, price)
                 if outcome is not None:
                     exit_price = self._trader.exit_price_for(pos, outcome, price)

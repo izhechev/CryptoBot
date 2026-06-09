@@ -125,3 +125,62 @@ async def test_broadcasts_live_prices(tracker, db):
     updates = tracker._notifier.send_prices.call_args[0][0]
     assert updates[0]["current_price"] == 103.0
     assert updates[0]["pnl_pct"] == pytest.approx(3.0)
+
+
+def make_v4_position(db: Storage, symbol: str, entry: float, stop_pct: float,
+                     trail_pct: float, hours_ago: float = 0,
+                     strategy: str = "whale") -> Position:
+    sig = db.save_signal(Signal(
+        id=None, coin_symbol=symbol, coin_name=symbol, total_score=100.0,
+        technical_score=5.0, news_score=0.0, gemini_explanation="w",
+        fired_at=datetime.now(timezone.utc), strategy=strategy,
+    ))
+    return db.save_position(Position(
+        id=None, signal_id=sig.id, coin_symbol=symbol, entry_price=entry,
+        entry_at=datetime.now(timezone.utc) - timedelta(hours=hours_ago),
+        exit_price=None, exit_at=None, outcome=None, pnl_pct=None,
+        strategy=strategy, stop_pct=stop_pct, trail_pct=trail_pct, peak_price=entry,
+    ))
+
+
+@pytest.mark.asyncio
+async def test_atr_stop_uses_position_specific_pct(tracker, db):
+    """Volatile coin got a 9% ATR stop: -8% must NOT stop it (old flat -7% would)."""
+    make_v4_position(db, "WILD", 100.0, stop_pct=9.0, trail_pct=4.0)
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"WILD": 92.0})  # -8%
+    await tracker.run_once()
+    assert len(db.get_open_positions()) == 1  # survives; -9% would close it
+
+
+@pytest.mark.asyncio
+async def test_trailing_lets_runner_run_past_roi(tracker, db):
+    """+20% after 2h: decaying ROI rung (+4%) would have booked it long ago, but the
+    armed trail keeps the runner OPEN while it keeps making highs."""
+    make_v4_position(db, "RUN", 100.0, stop_pct=6.0, trail_pct=4.0, hours_ago=2)
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"RUN": 120.0})
+    await tracker.run_once()
+    assert len(db.get_open_positions()) == 1  # armed + at the high -> still riding
+    assert db.get_open_positions()[0].peak_price == pytest.approx(120.0)
+
+
+@pytest.mark.asyncio
+async def test_trailing_books_win_on_giveback(tracker, db):
+    """Peaked +20%, then gave back >4% from the peak -> trail books the win near
+    the top instead of riding back down."""
+    pos = make_v4_position(db, "TRL", 100.0, stop_pct=6.0, trail_pct=4.0, hours_ago=2)
+    db.update_position_peak(pos.id, 120.0)  # high-water mark from earlier ticks
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"TRL": 115.0})  # -4.2% off peak
+    await tracker.run_once()
+    closed = db.get_all_positions()[0]
+    assert closed.outcome == "win"
+    assert closed.exit_price == pytest.approx(115.0)  # market fill, not a capped target
+
+
+@pytest.mark.asyncio
+async def test_unarmed_position_still_books_roi(tracker, db):
+    """Never peaked past the arm threshold -> decaying ROI still books the fading
+    winner (+5% at 2h >= the +4% whale rung)."""
+    make_v4_position(db, "FADE", 100.0, stop_pct=6.0, trail_pct=4.0, hours_ago=2)
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"FADE": 105.0})
+    await tracker.run_once()
+    assert db.get_all_positions()[0].outcome == "win"

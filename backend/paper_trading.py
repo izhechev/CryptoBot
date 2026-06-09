@@ -28,7 +28,9 @@ class PaperTrading:
                 self._cfg.max_hold_hours)
 
     def open_position(self, event: SignalEvent, entry_price: float,
-                      exchange: Optional[str] = None) -> Position:
+                      exchange: Optional[str] = None,
+                      stop_pct: Optional[float] = None,
+                      trail_pct: Optional[float] = None) -> Position:
         pos = Position(
             id=None,
             signal_id=event.signal_id,
@@ -42,8 +44,18 @@ class PaperTrading:
             strategy=event.strategy,
             exchange=exchange,
             coin_name=event.coin_name,
+            stop_pct=stop_pct,
+            trail_pct=trail_pct,
+            peak_price=entry_price,
         )
         return self._db.save_position(pos)
+
+    def _stop_pct_for(self, pos: Position) -> float:
+        """Per-position volatility-scaled stop; config default for legacy rows."""
+        if pos.stop_pct and pos.stop_pct > 0:
+            return pos.stop_pct
+        _, stop_loss_pct, _ = self._exit_params(pos.strategy)
+        return stop_loss_pct
 
     def _roi_target(self, strategy: str, elapsed_min: float) -> float:
         """Time-decaying take-profit target (%) for how long the trade has been open.
@@ -56,8 +68,13 @@ class PaperTrading:
         return table[-1][1] if table else 100.0
 
     def check_position(self, pos: Position, current_price: float) -> Optional[TradeOutcome]:
-        """Exit on the time-decaying ROI target, the stop-loss, or the max hold."""
-        _, stop_loss_pct, max_hold_hours = self._exit_params(pos.strategy)
+        """Exit logic, in priority order:
+        1. armed trailing exit — once the trade has PEAKED past trail_arm_pct, the
+           ROI cap is lifted (let the runner run) and we exit when price gives back
+           trail_pct from the high-water mark;
+        2. time-decaying ROI target (books fading winners that never armed);
+        3. volatility-scaled stop-loss; 4. max-hold timeout."""
+        _, _, max_hold_hours = self._exit_params(pos.strategy)
         pnl_pct = (current_price - pos.entry_price) / pos.entry_price * 100
 
         entry_at = pos.entry_at
@@ -65,9 +82,16 @@ class PaperTrading:
             entry_at = entry_at.replace(tzinfo=timezone.utc)
         elapsed = datetime.now(timezone.utc) - entry_at
 
-        if pnl_pct >= self._roi_target(pos.strategy, elapsed.total_seconds() / 60):
+        peak = pos.peak_price or pos.entry_price
+        peak_pnl = (peak - pos.entry_price) / pos.entry_price * 100
+        armed = bool(pos.trail_pct) and peak_pnl >= self._cfg.trail_arm_pct
+
+        if armed:
+            if current_price <= peak * (1 - pos.trail_pct / 100):
+                return TradeOutcome.WIN if pnl_pct > 0 else TradeOutcome.LOSS
+        elif pnl_pct >= self._roi_target(pos.strategy, elapsed.total_seconds() / 60):
             return TradeOutcome.WIN
-        if pnl_pct <= -stop_loss_pct:
+        if pnl_pct <= -self._stop_pct_for(pos):
             return TradeOutcome.LOSS
         if elapsed >= timedelta(hours=max_hold_hours):
             return TradeOutcome.TIMEOUT
@@ -84,11 +108,10 @@ class PaperTrading:
         return datetime.now(timezone.utc) - entry_at >= timedelta(hours=max_hold_hours)
 
     def exit_price_for(self, pos: Position, outcome: TradeOutcome, current_price: float) -> float:
-        """Fill price. ROI wins and timeouts exit at the polled market price; a stop
-        fills at the stop level (or worse — current price if it gapped past it)."""
-        _, stop_loss_pct, _ = self._exit_params(pos.strategy)
+        """Fill price. ROI/trailing wins and timeouts exit at the polled market price;
+        a stop fills at the stop level (or worse — current price if it gapped past)."""
         if outcome == TradeOutcome.LOSS:
-            return min(current_price, pos.entry_price * (1 - stop_loss_pct / 100))
+            return min(current_price, pos.entry_price * (1 - self._stop_pct_for(pos) / 100))
         return current_price
 
     def record_tick(self, pos: Position, current_price: float) -> None:

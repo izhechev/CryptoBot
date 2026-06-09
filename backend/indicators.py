@@ -20,6 +20,21 @@ _MIN_CANDLES = 50
 _DIVERGENCE_LOOKBACK = 40
 
 
+def atr_pct(df: pd.DataFrame, period: int = 14) -> Optional[float]:
+    """Average True Range as a % of the last close — the coin's own volatility,
+    used to scale stops/trails per position instead of one-size-fits-all %."""
+    if df is None or len(df) < period + 1:
+        return None
+    atr_series = ta.atr(df["high"], df["low"], df["close"], length=period)
+    if atr_series is None:
+        return None
+    atr = atr_series.iloc[-1]
+    last_close = df["close"].iloc[-1]
+    if pd.isna(atr) or last_close <= 0:
+        return None
+    return float(atr / last_close * 100)
+
+
 def _is_uptrend(df: pd.DataFrame, ema_length: int = 50) -> bool:
     """True if the latest close is above its EMA (a basic trend filter)."""
     if df is None or len(df) < ema_length:
