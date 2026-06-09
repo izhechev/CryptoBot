@@ -174,3 +174,25 @@ def test_liquidity_scaled_cost(cfg):
     liquid = candles(50, price=100.0, vol=100_000.0)   # ~$10M/candle -> negligible
     assert _trade_cost_pct(thin, 30, 1000.0) >= 3.0    # capped slip 2%/side + fees
     assert _trade_cost_pct(liquid, 30, 1000.0) <= 0.5
+
+
+def test_scan_range_bounds_entries(cfg):
+    """A spike outside [scan_start, scan_end) must not produce a trade."""
+    df, s = _spiked_df()
+    # spike is detectable from scan steps shortly after index s
+    trades_in = simulate_coin(cfg, "T", df, None, strategies="whale",
+                              scan_start=s - 4, scan_end=s + 40)
+    trades_out = simulate_coin(cfg, "T", df, None, strategies="whale",
+                               scan_start=s + 60, scan_end=None)
+    assert len(trades_in) == 1
+    assert trades_out == []
+
+
+def test_spot_scores_respect_scan_range(cfg):
+    from backend.backtest import simulate_spot_from_scores
+    df = candles(_WARMUP + 120)
+    scores = [(_WARMUP + 10, 90.0, True)]
+    assert simulate_spot_from_scores(cfg, "X", df, scores,
+                                     scan_start=_WARMUP + 20) == []
+    assert len(simulate_spot_from_scores(cfg, "X", df, scores,
+                                         scan_end=_WARMUP + 20)) == 1

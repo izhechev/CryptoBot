@@ -151,13 +151,18 @@ def _regime_at(regime: pd.Series, ts) -> bool:
 
 
 def simulate_coin(cfg: Config, symbol: str, df: pd.DataFrame,
-                  regime: Optional[pd.Series], strategies: str = "both") -> list[SimTrade]:
+                  regime: Optional[pd.Series], strategies: str = "both",
+                  scan_start: Optional[int] = None,
+                  scan_end: Optional[int] = None) -> list[SimTrade]:
     """Hourly scan steps over the coin's history; one open position per strategy
-    at a time (live dedup); simulate each entry straight through to its exit."""
+    at a time (live dedup); simulate each entry straight through to its exit.
+    scan_start/scan_end bound WHERE entries may originate (train/test splits)."""
     trades: list[SimTrade] = []
     busy_until = {"whale": -1, "standard": -1}
+    lo = max(_WARMUP, scan_start if scan_start is not None else _WARMUP)
+    hi = min(len(df) - 1, scan_end if scan_end is not None else len(df) - 1)
 
-    for i in range(_WARMUP, len(df) - 1, _SCAN_STRIDE):
+    for i in range(lo, hi, _SCAN_STRIDE):
         window = df.iloc[: i + 1]
         ts = df.index[i]
         bullish = _regime_at(regime, ts) if regime is not None else True
@@ -347,11 +352,17 @@ def precompute_spot_scores(cfg: Config, df: pd.DataFrame,
 
 
 def simulate_spot_from_scores(cfg: Config, symbol: str, df: pd.DataFrame,
-                              scores: list[tuple[int, float, bool]]) -> list[SimTrade]:
+                              scores: list[tuple[int, float, bool]],
+                              scan_start: Optional[int] = None,
+                              scan_end: Optional[int] = None) -> list[SimTrade]:
     """Spot trades from precomputed scores under the given thresholds/exits."""
     trades: list[SimTrade] = []
     busy_until = -1
     for i, total, bullish in scores:
+        if scan_start is not None and i < scan_start:
+            continue
+        if scan_end is not None and i >= scan_end:
+            break
         if i < busy_until:
             continue
         bar = cfg.signal_threshold if bullish else cfg.bear_signal_threshold
@@ -376,7 +387,7 @@ def simulate_spot_from_scores(cfg: Config, symbol: str, df: pd.DataFrame,
 
 
 def run_spot_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
-                   regime: Optional[pd.Series]) -> None:
+                   regime: Optional[pd.Series], holdout: int = 0) -> None:
     """Grid-search spot thresholds/exits over precomputed indicator scores."""
     print(f"Precomputing indicator scores for {len(histories)} coins "
           f"(one heavy pass; combos re-test in seconds)...")
@@ -388,48 +399,87 @@ def run_spot_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
 
     keys = list(_SPOT_SWEEP_GRID)
     combos = list(itertools.product(*_SPOT_SWEEP_GRID.values()))
-    rows = []
-    for combo in combos:
+
+    def evaluate(combo, segment: str) -> list[SimTrade]:
         c = replace(cfg, **dict(zip(keys, combo)))
         trades: list[SimTrade] = []
         for sym, df in histories.items():
-            trades.extend(simulate_spot_from_scores(c, sym, df, scores[sym]))
-        if not trades:
-            rows.append((combo, 0, 0.0, 0.0))
-            continue
-        wins = sum(1 for t in trades if t.outcome == "win")
-        net = statistics.mean(t.pnl_pct - t.cost_pct for t in trades)
-        rows.append((combo, len(trades), wins / len(trades) * 100, net))
+            s, e = _segment_bounds(len(df), holdout, segment)
+            trades.extend(simulate_spot_from_scores(c, sym, df, scores[sym],
+                                                    scan_start=s, scan_end=e))
+        return trades
+
+    rows = []
+    for combo in combos:
+        n, wr, net = _trade_stats(evaluate(combo, "train" if holdout else "all"))
+        rows.append((combo, n, wr, net))
     rows.sort(key=lambda r: r[3], reverse=True)
     print(f"\n{'bar':>5} {'bear_bar':>8} {'trail_arm':>9} {'atr_stop':>8} | {'trades':>6} {'win%':>5} {'net_exp':>8}")
     for combo, n, wr, net in rows:
         print(f"{combo[0]:>5} {combo[1]:>8} {combo[2]:>9} {combo[3]:>8} | {n:>6} {wr:>4.0f}% {net:>+7.2f}%")
+    if holdout:
+        _print_holdout(rows, evaluate, holdout)
     print("\n(net_exp = average net P&L per trade after fees+slippage; higher is better)")
 
 
+def _segment_bounds(df_len: int, holdout: int, segment: str) -> tuple[Optional[int], Optional[int]]:
+    split = df_len - holdout
+    if segment == "train":
+        return None, split
+    if segment == "test":
+        return split, None
+    return None, None
+
+
+def _trade_stats(trades: list[SimTrade]) -> tuple[int, float, float]:
+    if not trades:
+        return 0, 0.0, 0.0
+    wins = sum(1 for t in trades if t.outcome == "win")
+    net = statistics.mean(t.pnl_pct - t.cost_pct for t in trades)
+    return len(trades), wins / len(trades) * 100, net
+
+
+def _print_holdout(rows: list, evaluate, holdout: int) -> None:
+    """Out-of-sample report: how the top-3 TRAIN combos perform on data they never
+    saw, plus walk-forward efficiency (test/train; >50-60% = genuinely robust)."""
+    print(f"\n--- OUT-OF-SAMPLE (last {holdout // _CANDLES_PER_DAY} days, never used for ranking) ---")
+    for combo, n, wr, net in rows[:3]:
+        tn, twr, tnet = _trade_stats(evaluate(combo, "test"))
+        wfe = (tnet / net * 100) if net > 0 else float("nan")
+        print(f"  {combo}: train {net:+.2f}% ({n}tr {wr:.0f}%w) -> "
+              f"test {tnet:+.2f}% ({tn}tr {twr:.0f}%w)"
+              + (f"  WFE {wfe:.0f}%" if net > 0 else ""))
+
+
 def run_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
-              regime: Optional[pd.Series]) -> None:
+              regime: Optional[pd.Series], holdout: int = 0) -> None:
     """Grid-search whale parameters over cached history (no network). Ranks each
-    combo by net expectancy per trade — evidence-based tuning, not vibes."""
-    rows = []
+    combo by net expectancy per trade on the TRAIN window; with a holdout, the
+    top combos are re-scored on unseen data (overfitting check)."""
     keys = list(_SWEEP_GRID)
     combos = list(itertools.product(*_SWEEP_GRID.values()))
-    print(f"Sweeping {len(combos)} whale-parameter combos over {len(histories)} coins...")
-    for combo in combos:
+    print(f"Sweeping {len(combos)} whale-parameter combos over {len(histories)} coins"
+          + (f" (holdout: last {holdout // _CANDLES_PER_DAY} days)" if holdout else "") + "...")
+
+    def evaluate(combo, segment: str) -> list[SimTrade]:
         c = replace(cfg, **dict(zip(keys, combo)))
         trades: list[SimTrade] = []
         for sym, df in histories.items():
-            trades.extend(simulate_coin(c, sym, df, regime, strategies="whale"))
-        if not trades:
-            rows.append((combo, 0, 0.0, 0.0))
-            continue
-        wins = sum(1 for t in trades if t.outcome == "win")
-        net = statistics.mean(t.pnl_pct - t.cost_pct for t in trades)
-        rows.append((combo, len(trades), wins / len(trades) * 100, net))
+            s, e = _segment_bounds(len(df), holdout, segment)
+            trades.extend(simulate_coin(c, sym, df, regime, strategies="whale",
+                                        scan_start=s, scan_end=e))
+        return trades
+
+    rows = []
+    for combo in combos:
+        n, wr, net = _trade_stats(evaluate(combo, "train" if holdout else "all"))
+        rows.append((combo, n, wr, net))
     rows.sort(key=lambda r: r[3], reverse=True)
     print(f"\n{'entry':>7} {'bypass':>6} {'vol_mult':>8} | {'trades':>6} {'win%':>5} {'net_exp':>8}")
     for combo, n, wr, net in rows:
         print(f"{combo[0]:>7} {str(combo[1]):>6} {combo[2]:>8} | {n:>6} {wr:>4.0f}% {net:>+7.2f}%")
+    if holdout:
+        _print_holdout(rows, evaluate, holdout)
 
     # Baseline the perennial question: fixed TP +10% / SL -10%, no trail, no decay.
     fixed = replace(cfg, whale_roi=[(0.0, 10.0)], stop_pct_min=10.0, stop_pct_max=10.0,
@@ -455,6 +505,9 @@ async def main() -> None:
     ap.add_argument("--strategy", choices=["both", "whale", "spot"], default="both")
     ap.add_argument("--sweep", choices=["whale", "spot"], default=None,
                     help="grid-search parameters for one strategy instead of a single run")
+    ap.add_argument("--holdout-days", type=int, default=0,
+                    help="reserve the last N days as out-of-sample: rank combos on the "
+                         "rest, then report how the winners do on unseen data (~30%% rec.)")
     ap.add_argument("--no-cache", action="store_true")
     ap.add_argument("--no-costs", action="store_true",
                     help="report gross only (no fee/slippage estimate)")
@@ -484,11 +537,12 @@ async def main() -> None:
             print(f"  ...{n}/{len(coins)} coins loaded")
     await md.close()
 
+    holdout = args.holdout_days * _CANDLES_PER_DAY
     if args.sweep == "whale":
-        run_sweep(cfg, histories, regime)
+        run_sweep(cfg, histories, regime, holdout=holdout)
         return
     if args.sweep == "spot":
-        run_spot_sweep(cfg, histories, regime)
+        run_spot_sweep(cfg, histories, regime, holdout=holdout)
         return
 
     trades: list[SimTrade] = []
