@@ -10,10 +10,21 @@ from google.genai import types
 from backend.cmc_client import CmcClient
 
 logger = logging.getLogger(__name__)
-# Tried in order — when the primary is overloaded (503) or out of daily quota
-# (429), the next model has a separate bucket. Last resort is the neutral
-# fallback, never a blocked trade.
-_GROUNDED_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"]
+# Every text-flash model on the key that supports search grounding, best-first
+# (capability order; lites later). Each has its own free-tier quota bucket, so on
+# 503 overload / 429 quota the chain walks to the next bucket. Verified live via
+# models.list() + grounded test calls. Last resort is neutral, never a blocked trade.
+_GROUNDED_MODELS = [
+    "gemini-3.5-flash",
+    "gemini-3-flash-preview",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-flash-latest",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash-lite",
+    "gemini-flash-lite-latest",
+]
 # Cache catalyst verdicts per coin: the prompt looks at a 48h news window, so
 # re-asking the same coin every hourly scan only burns free-tier quota (~250
 # requests/day) for the same answer.
