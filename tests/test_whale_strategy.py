@@ -72,3 +72,12 @@ def test_skips_blowoff_top(cfg):
     df.loc[df.index[-4]:, "close"] = [100.0, 101.0, 102.0, 125.0]  # last candle +22%
     df.loc[df.index[-1], "volume"] = 1_000_000.0 * 5
     assert detect_whale(df, cfg) is None
+
+
+def test_skips_multicandle_blowoff_thrust(cfg):
+    """A parabolic thrust over the whole lookback (>= max_thrust_pct) is rejected as
+    an exhaustion top, even though each single candle is under the single-candle cap."""
+    df = base_df(n=60, price=100.0)
+    df.loc[df.index[-4]:, "close"] = [100.0, 106.0, 113.0, 121.0]  # +21% over 3 candles
+    df.loc[df.index[-1], "volume"] = 1_000_000.0 * 6
+    assert detect_whale(df, cfg) is None

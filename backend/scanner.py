@@ -156,31 +156,35 @@ class Scanner:
             )
             return result
 
-        headlines = await self._news.fetch_headlines(coin.symbol)
-        news_result = self._news.analyze_sentiment(coin.symbol, coin.name, headlines)
-
-        if news_result.analyzed:
-            total_score = compute_total_score(ind_scores.total, news_result.score, self._cfg)
-        else:
-            # No real news (e.g. CMC news needs a paid plan) — don't let a fake
-            # neutral 50 suppress the signal; judge on technicals alone.
-            total_score = min(100.0, ind_scores.total)
-        result.news_score = news_result.score
-        result.total_score = total_score
         result.status = "scored"
+        result.total_score = min(100.0, ind_scores.total)  # tech-only until news is checked
+
+        # Only spend a grounded news call on coins that would fire on technicals AND that
+        # we can open — keeps Gemini to a few candidates per scan (free-tier safe).
+        if ind_scores.total < self._cfg.signal_threshold or not self._can_open():
+            return result
+
+        catalyst = self._news.grounded_catalyst(coin.symbol, coin.name)
+        result.news_score = catalyst.sentiment
+        if catalyst.analyzed:
+            # Real recent news — blend it in; bearish news can veto a tech-strong coin.
+            total_score = compute_total_score(ind_scores.total, catalyst.sentiment, self._cfg)
+        else:
+            total_score = min(100.0, ind_scores.total)  # no recent news -> technicals alone
+        result.total_score = total_score
         logger.debug(
-            "  %s: tech=%.1f news=%.1f → total=%.1f (fires at >=%.0f) — %s",
-            coin.symbol, ind_scores.total, news_result.score,
-            total_score, self._cfg.signal_threshold, news_result.explanation,
+            "  %s: tech=%.1f news=%.0f catalyst=%s → total=%.1f — %s",
+            coin.symbol, ind_scores.total, catalyst.sentiment, catalyst.catalyst,
+            total_score, catalyst.reason,
         )
 
         if total_score < self._cfg.signal_threshold:
-            return result
-        if not self._can_open():  # regime / max-positions gate
+            return result  # bearish news vetoed it
+        if catalyst.catalyst == "migration":
+            logger.debug("  %s: migration risk — skipped", coin.symbol)
             return result
 
-        # Resolve a trusted (CoinGecko) entry price BEFORE recording the signal, so
-        # we never log a signal we can't act on (e.g. a stale/wrong market price).
+        # Resolve a trusted (CoinGecko) entry price BEFORE recording the signal.
         entry_price = await self._entry_price(coin)
         if entry_price is None:
             return result
@@ -190,8 +194,8 @@ class Scanner:
             coin_name=coin.name,
             total_score=total_score,
             technical_score=ind_scores.total,
-            news_score=news_result.score,
-            gemini_explanation=news_result.explanation,
+            news_score=catalyst.sentiment,
+            gemini_explanation=catalyst.reason or "Technical signal.",
         )
         if event is None:
             return result
@@ -231,6 +235,17 @@ class Scanner:
         # Whales can bypass the (multi-day) BTC regime gate — they're short-hold and
         # already require the coin itself to be in an uptrend. Still respect the cap.
         if not self._can_open(respect_regime=not self._cfg.whale_bypass_regime):
+            return False
+        # Cheap check first: skip a coin already extended over 7 days (RIF/DASH pattern).
+        change_7d = await self._gecko.fetch_change_7d(coin.symbol, coin.name)
+        if change_7d is not None and change_7d >= self._cfg.pumped_skip_pct:
+            logger.debug("  %s: +%.0f%%/7d already pumped — whale skipped", coin.symbol, change_7d)
+            return False
+        # Grounded news gate: veto on bearish news or an ongoing migration/rebrand.
+        catalyst = self._news.grounded_catalyst(coin.symbol, coin.name)
+        if catalyst.sentiment < self._cfg.news_veto_threshold or catalyst.catalyst == "migration":
+            logger.debug("  %s: whale vetoed by news (sentiment=%.0f catalyst=%s) — %s",
+                         coin.symbol, catalyst.sentiment, catalyst.catalyst, catalyst.reason)
             return False
         # Resolve a trusted (CoinGecko) price before recording a whale signal, so a
         # stale/frozen or wrong-coin market can't produce a phantom whale ride.

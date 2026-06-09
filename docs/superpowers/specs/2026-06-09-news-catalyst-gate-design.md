@@ -49,7 +49,9 @@ run checks in **cost order** (cheap/free first, Gemini last):
 4. **Gemini grounded catalyst classifier (free tier, ~3–5s):** one search-grounded call,
    recency-constrained to 48h. Returns `{catalyst, sentiment, latest_date, reason}`.
    - `sentiment < news_veto_threshold` (35) → **skip** (bearish news).
-   - `catalyst == migration` → open at **reduced size** (`migration_size_multiplier`, 0.5).
+   - `catalyst == migration` → **skip** (the LIT-type rebrand risk). *(Implemented as a
+     skip rather than reduced size — true position sizing needs notional tracking the bot
+     doesn't have yet; deferred to a future change.)*
    - `listing | partnership | launch` → allow (positive catalyst).
    - no recent news → neutral, allow (rely on whale/technical quality).
 
@@ -82,22 +84,17 @@ news pipeline is dead), so bearish news can pull a tech-strong coin below thresh
 ### 4. Volume floor — `backend/config.yaml`
 - `whale.volume_multiple: 3.0 → 5.0` (configurable; cuts the 3.4× faders).
 
-### 5. Variable position size — `backend/paper_trading.py`
-- `open_position(..., size_multiplier: float = 1.0)` scales the notional. Used to half-size
-  migration-risk coins.
-
-### 6. Scanner integration — `backend/scanner.py`
+### 5. Scanner integration — `backend/scanner.py`
 - `_open_whale`: run checks 1–4 in order; veto/skip/half-size per the rules above.
 - `_scan_coin` (spot): call `grounded_catalyst` for firing candidates and blend
   `sentiment` into `compute_total_score` (news weight re-enabled).
 
-### 7. Config additions (`config.yaml` + `config.py`)
+### 6. Config additions (`config.yaml` + `config.py`)
 - `scoring.pumped_skip_pct: 30`
 - `scoring.news_veto_threshold: 35`
 - `whale.max_thrust_pct: 18`
 - `whale.volume_multiple: 5.0` (raised)
-- `paper_trading.migration_size_multiplier: 0.5`
-- Re-enable news weighting for spot (already has `news_weight: 0.35`).
+- Spot news blend re-enabled (uses existing `news_weight: 0.35`).
 
 ## Data Flow
 

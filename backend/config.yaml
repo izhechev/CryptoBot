@@ -16,6 +16,8 @@ scoring:
   pre_filter_threshold: 55       # min technical score before fetching news + calling Gemini
   signal_threshold: 75           # min total score to fire a MUST-BUY signal
   max_price_divergence_pct: 8    # reject if exchange price is >8% off CMC's price (stale/wrong coin)
+  pumped_skip_pct: 30            # skip a candidate already up this % over 7 days (RIF/DASH pattern)
+  news_veto_threshold: 35        # skip a candidate if grounded news sentiment is below this
   technical_weight: 0.65
   news_weight: 0.35
   min_volume_24h: 25000          # CMC server-side filter: ~2785 coins (lower = more, thinner coins)
@@ -57,8 +59,9 @@ tracking:
 whale:
   enabled: true
   bypass_regime: true           # whales trade even when BTC is below its 4h trend (daily action; spot still gated)
-  volume_multiple: 3.0          # latest candle volume >= 3x recent average
+  volume_multiple: 5.0          # latest candle volume >= 5x recent average (raised: 3.4x faders lose)
   price_thrust_pct: 3.0         # price up >= 3% over the thrust lookback
+  max_thrust_pct: 18            # reject if thrust >= this % over the lookback (blow-off top: DEGO/RAD)
   thrust_lookback: 3            # number of candles for the price-thrust window
   take_profit_pct: 15.0
   stop_loss_pct: 7.0

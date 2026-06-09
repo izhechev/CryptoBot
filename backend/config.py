@@ -63,6 +63,10 @@ class Config:
     max_open_positions: int = 6        # cap correlated concurrent exposure
     regime_filter: bool = True         # skip NEW entries when BTC is below its 4h trend
     whale_bypass_regime: bool = True   # whales (short, self-trend-filtered) trade in any market
+    # Pre-trade news/catalyst gate (v2):
+    pumped_skip_pct: float = 30.0      # skip a candidate already up this % over 7 days
+    news_veto_threshold: float = 35.0  # skip if grounded news sentiment is below this
+    whale_max_thrust_pct: float = 18.0 # reject parabolic thrust over the lookback (blow-off top)
 
 
 def _parse_roi(raw: dict | None, default_pct: float) -> list:
@@ -122,6 +126,9 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         max_open_positions=int(scan.get("max_open_positions", 6)),
         regime_filter=bool(scan.get("regime_filter", True)),
         whale_bypass_regime=bool(whale.get("bypass_regime", True)),
+        pumped_skip_pct=float(scoring.get("pumped_skip_pct", 30.0)),
+        news_veto_threshold=float(scoring.get("news_veto_threshold", 35.0)),
+        whale_max_thrust_pct=float(whale.get("max_thrust_pct", 18.0)),
         tracking_interval_seconds=int(tracking.get("interval_seconds", 60)),
         tracking_timeframe=tracking.get("candle_timeframe", "1m"),
         tracking_candle_limit=int(tracking.get("candle_limit", 60)),

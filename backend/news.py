@@ -5,9 +5,20 @@ from dataclasses import dataclass
 from typing import Optional
 import aiohttp
 from google import genai
+from google.genai import types
 from backend.cmc_client import CmcClient
 
 logger = logging.getLogger(__name__)
+_GROUNDED_MODEL = "gemini-2.5-flash"
+_CATALYST_PROMPT = """Search the web for news about {name} ({symbol}) cryptocurrency. \
+Consider ONLY news published in the last 48 hours; ignore anything older.
+Classify the single most important recent catalyst and judge sentiment for the next 24 hours.
+Reply in EXACTLY this format and nothing else:
+LATEST_NEWS_DATE: <date of the most recent item, or NONE>
+CATALYST: <one of: listing, partnership, launch, migration, none>
+SENTIMENT: <integer 0-100, 50=neutral; if no news in the last 48h, output 50>
+REASON: <one short sentence>"""
+_VALID_CATALYSTS = {"listing", "partnership", "launch", "migration", "none"}
 
 
 @dataclass
@@ -15,6 +26,18 @@ class NewsResult:
     score: float
     explanation: str
     analyzed: bool = True  # False = no real news (fallback); caller should ignore the score
+
+
+@dataclass
+class CatalystResult:
+    sentiment: float      # 0-100, 50 = neutral
+    catalyst: str         # none | listing | partnership | launch | migration
+    latest_date: str      # date string, or "NONE"
+    reason: str
+    analyzed: bool = True  # False = no recent news / lookup failed -> sentiment is neutral filler
+
+
+_NEUTRAL_CATALYST = CatalystResult(50.0, "none", "NONE", "No recent news.", analyzed=False)
 
 
 _CRYPTOCOMPARE_URL = "https://min-api.cryptocompare.com/data/v2/news/"
@@ -38,6 +61,38 @@ class NewsClient:
     def __init__(self, gemini_api_key: str, cmc_client: Optional[CmcClient] = None):
         self._client = genai.Client(api_key=gemini_api_key)
         self._cmc = cmc_client
+
+    def grounded_catalyst(self, symbol: str, name: str) -> CatalystResult:
+        """One web-search-grounded Gemini call: recent (48h) news catalyst + sentiment.
+        Used as the pre-trade gate. Fails safe to neutral so an API hiccup never blocks
+        a trade. Called only for candidates about to open (free-tier safe)."""
+        try:
+            resp = self._client.models.generate_content(
+                model=_GROUNDED_MODEL,
+                contents=_CATALYST_PROMPT.format(name=name or symbol, symbol=symbol),
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())]
+                ),
+            )
+            return self._parse_catalyst(resp.text or "")
+        except Exception as e:
+            logger.warning("  %s: grounded catalyst lookup failed (%s) — neutral", symbol, e)
+            return _NEUTRAL_CATALYST
+
+    @staticmethod
+    def _parse_catalyst(text: str) -> CatalystResult:
+        def grab(key: str, default: str) -> str:
+            m = re.search(rf"{key}\s*:\s*(.+)", text, re.IGNORECASE)
+            return m.group(1).strip() if m else default
+
+        date = grab("LATEST_NEWS_DATE", "NONE")
+        catalyst = grab("CATALYST", "none").lower().split()[0] if grab("CATALYST", "none") else "none"
+        if catalyst not in _VALID_CATALYSTS:
+            catalyst = "none"
+        m = re.search(r"\d+", grab("SENTIMENT", "50"))
+        sentiment = max(0.0, min(100.0, float(m.group()))) if m else 50.0
+        analyzed = date.strip().upper() != "NONE"
+        return CatalystResult(sentiment, catalyst, date, grab("REASON", ""), analyzed)
 
     async def _fetch_cryptocompare(self, symbol: str, limit: int) -> list[str]:
         params = {"categories": symbol, "lang": "EN", "sortOrder": "latest", "limit": limit}

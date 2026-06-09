@@ -23,6 +23,7 @@ class GeckoClient:
 
     async def _markets(self, symbols: list[str]) -> list:
         params = {"vs_currency": "usd", "order": "market_cap_desc",
+                  "price_change_percentage": "7d",
                   "symbols": ",".join(sorted({s.lower() for s in symbols}))}
         try:
             async with aiohttp.ClientSession() as s:
@@ -46,6 +47,20 @@ class GeckoClient:
 
     async def fetch_price(self, symbol: str, name: str = "") -> Optional[float]:
         return self._pick(await self._markets([symbol]), symbol, name)
+
+    @staticmethod
+    def _pick_field(rows: list, symbol: str, name: str, field: str) -> Optional[float]:
+        cands = [d for d in rows if d.get("symbol", "").lower() == symbol.lower()]
+        if not cands:
+            return None
+        chosen = next((d for d in cands if d.get("name", "").lower() == name.lower()), cands[0])
+        val = chosen.get(field)
+        return float(val) if val is not None else None
+
+    async def fetch_change_7d(self, symbol: str, name: str = "") -> Optional[float]:
+        """7-day % price change for the already-pumped skip. None if unavailable."""
+        return self._pick_field(await self._markets([symbol]), symbol, name,
+                                "price_change_percentage_7d_in_currency")
 
     async def fetch_prices(self, coins: list) -> dict:
         """Bulk USD prices for (symbol, name) pairs in ONE call, name-disambiguated.

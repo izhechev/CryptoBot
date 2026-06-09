@@ -41,6 +41,10 @@ def detect_whale(df: pd.DataFrame, cfg: Config) -> Optional[WhaleSignal]:
 
     if not (volume_ratio >= cfg.whale_volume_multiple and price_thrust_pct >= cfg.whale_price_thrust_pct):
         return None
+    # Multi-candle blow-off: a parabolic thrust over the whole window is an exhaustion
+    # top that reverses (DEGO +19.8%, RAD) — distinct from the single-candle guard below.
+    if price_thrust_pct >= cfg.whale_max_thrust_pct:
+        return None
 
     last_close = float(close.iloc[-1])
 

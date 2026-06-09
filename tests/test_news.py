@@ -91,3 +91,28 @@ def test_analyze_sentiment_fallback_on_empty_headlines(news_client):
     result = news_client.analyze_sentiment("BTC", "Bitcoin", [])
     assert result.score == 50.0
     assert result.explanation == "No recent news found."
+
+
+def test_parse_catalyst_real_news():
+    from backend.news import NewsClient
+    text = ("LATEST_NEWS_DATE: June 9, 2026\n"
+            "CATALYST: listing\n"
+            "SENTIMENT: 78\n"
+            "REASON: Newly listed on Binance.")
+    r = NewsClient._parse_catalyst(text)
+    assert r.catalyst == "listing"
+    assert r.sentiment == 78.0
+    assert r.analyzed is True
+    assert "Binance" in r.reason
+
+
+def test_parse_catalyst_no_recent_news():
+    from backend.news import NewsClient
+    text = ("LATEST_NEWS_DATE: NONE\n"
+            "CATALYST: none\n"
+            "SENTIMENT: 50\n"
+            "REASON: No recent news.")
+    r = NewsClient._parse_catalyst(text)
+    assert r.analyzed is False
+    assert r.sentiment == 50.0
+    assert r.catalyst == "none"
