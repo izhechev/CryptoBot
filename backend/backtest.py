@@ -61,11 +61,13 @@ class SimTrade:
     cost_pct: float = 0.5      # round-trip fees + liquidity-scaled slippage
 
 
-def _trade_cost_pct(df: pd.DataFrame, entry_idx: int, notional: float) -> float:
+def _trade_cost_pct(df: pd.DataFrame, entry_idx: int, notional: float,
+                    limit_entry: bool = False) -> float:
     """Round-trip cost: exchange fees + slippage scaled by how much of the coin's
     typical candle volume our order consumes. A $1k order in a $10k/candle coin
     moves the price; in a $1M/candle coin it doesn't. (Flat slippage flatters
-    exactly the thin coins where whales live.)"""
+    exactly the thin coins where whales live.) A limit entry (retest fill) is a
+    maker order — it pays no entry slippage, only the exit side."""
     lo = max(0, entry_idx - 20)
     usd_vol = float((df["close"].iloc[lo:entry_idx] * df["volume"].iloc[lo:entry_idx]).mean() or 0)
     if usd_vol <= 0:
@@ -73,7 +75,8 @@ def _trade_cost_pct(df: pd.DataFrame, entry_idx: int, notional: float) -> float:
     else:
         participation = notional / usd_vol
         slip = min(2.0, max(0.05, participation * 25.0))  # % per side
-    return 2 * (_FEE_PCT + slip)
+    sides = 1 if limit_entry else 2
+    return 2 * _FEE_PCT + sides * slip
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -183,7 +186,7 @@ def simulate_coin(cfg: Config, symbol: str, df: pd.DataFrame,
                             fill = j
                             break
                     if fill is not None:
-                        candidates.append(("whale", fill, limit))
+                        candidates.append(("whale-limit", fill, limit))
                     else:
                         # never filled — don't keep re-arming on the same spike
                         busy_until["whale"] = i + cfg.whale_retest_wait_candles
@@ -195,7 +198,9 @@ def simulate_coin(cfg: Config, symbol: str, df: pd.DataFrame,
             if ind.total >= bar:
                 candidates.append(("standard", i + 1, float(df["open"].iloc[i + 1])))
 
-        for strategy, entry_idx, entry_price in candidates:
+        for tag, entry_idx, entry_price in candidates:
+            limit_entry = tag == "whale-limit"
+            strategy = "whale" if limit_entry else tag
             if entry_price <= 0 or entry_idx >= len(df):
                 continue
             stop_pct, trail_pct = _exit_levels(cfg, window)
@@ -206,7 +211,8 @@ def simulate_coin(cfg: Config, symbol: str, df: pd.DataFrame,
                 entry_price=entry_price, exit_price=exit_price, outcome=outcome,
                 pnl_pct=(exit_price - entry_price) / entry_price * 100,
                 held_min=(exit_idx - entry_idx) * 15,
-                cost_pct=_trade_cost_pct(df, entry_idx, cfg.notional_size),
+                cost_pct=_trade_cost_pct(df, entry_idx, cfg.notional_size,
+                                         limit_entry=limit_entry),
             ))
             busy_until[strategy] = exit_idx
 
@@ -505,6 +511,9 @@ async def main() -> None:
     ap.add_argument("--strategy", choices=["both", "whale", "spot"], default="both")
     ap.add_argument("--sweep", choices=["whale", "spot"], default=None,
                     help="grid-search parameters for one strategy instead of a single run")
+    ap.add_argument("--min-volume", type=float, default=0,
+                    help="only test coins with at least this much 24h USD volume "
+                         "(liquidity-targeted universe: real slippage stays small)")
     ap.add_argument("--holdout-days", type=int, default=0,
                     help="reserve the last N days as out-of-sample: rank combos on the "
                          "rest, then report how the winners do on unseen data (~30%% rec.)")
@@ -518,6 +527,8 @@ async def main() -> None:
     await md.init()
     cmc = CmcClient(cfg.cmc_api_key)
     listings = await cmc.fetch_all_coins(min_volume_24h=cfg.min_volume_24h)
+    if args.min_volume > 0:
+        listings = [c for c in listings if c.volume_24h >= args.min_volume]
     coins = listings[args.offset: args.offset + args.coins]
     candles = args.days * _CANDLES_PER_DAY + _WARMUP
     use_cache = not args.no_cache
