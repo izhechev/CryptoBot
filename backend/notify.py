@@ -98,6 +98,10 @@ class Notifier:
             "pnl_pct": round(pnl_pct, 4),
         })
 
+    async def send_daily_report(self, text: str) -> None:
+        """Daily performance digest (Telegram only)."""
+        await self._tg(text)
+
     async def send_prices(self, updates: list[dict]) -> None:
         """One batched frame with every open position's live price, so the dashboard
         applies them all in a single render (not one coin per message)."""

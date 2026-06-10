@@ -270,6 +270,15 @@ class Storage:
         with self._conn() as conn:
             conn.execute("DELETE FROM pending_orders WHERE id=?", (order_id,))
 
+    def get_closed_since(self, cutoff: datetime) -> list[Position]:
+        """Positions closed at/after `cutoff` (the daily report window)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM positions WHERE outcome IS NOT NULL AND exit_at >= ? "
+                "ORDER BY exit_at", (_dts(cutoff),)
+            ).fetchall()
+            return [_position_from_row(r) for r in rows]
+
     def last_exit(self, coin_symbol: str) -> Optional[tuple[str, datetime]]:
         """(outcome, exit_at) of the coin's most recently closed position, or None.
         Drives re-entry cooldowns: don't immediately re-buy a coin that just closed."""
