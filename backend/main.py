@@ -40,6 +40,7 @@ async def main() -> None:
     logger.info("CryptoBot starting — API on http://localhost:8000")
     await asyncio.gather(
         scanner.loop(),
+        scanner.whale_loop(),
         tracker.loop(),
         server.serve(),
     )

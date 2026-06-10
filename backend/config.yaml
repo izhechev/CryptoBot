@@ -96,6 +96,8 @@ whale:
   volume_multiple: 3.0          # on liquid coins the 3x floor measured best (spikes are real)
   min_taker_buy_share: 0.55     # spike window must be buyer-dominated (taker buys >= 55% of
                                 # volume on Binance-routed coins; seller-led spikes = distribution)
+  scan_interval_minutes: 15     # fast whale-only pass over the liquid universe (full scan is
+                                # hourly; this catches spikes at their confirmation candle)
   entry_mode: retest            # SWEEP v2: retest+obedient+5x was the ONLY green whale
                                 # config (100% win, +2.0%/trade net; n=4 — thin sample).
                                 # "chase" = old buy-at-market behavior.

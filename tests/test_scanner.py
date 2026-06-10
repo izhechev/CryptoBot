@@ -380,3 +380,27 @@ async def test_taker_gate_allows_buyer_led_spike(scanner, db):
                return_value=IndicatorScores(0.0, 0.0, 0.0, 0.0, 0.0, False, 10.0)):
         await scanner.run_once()
     assert db.has_open_position("PEPE", strategy="whale") or len(db.get_pending_orders()) == 1
+
+
+@pytest.mark.asyncio
+async def test_whale_pass_scans_liquid_universe(scanner, db):
+    """The fast lane sweeps the liquid list and runs the full whale entry path."""
+    scanner._liquid_coins = [
+        CoinListing(symbol="PEPE", name="Pepe", price=0.0000012, volume_24h=2e8, change_24h=20.0)
+    ]
+    scanner._market.fetch_candles = AsyncMock(return_value=make_candle_df())
+    scanner._market.fetch_current_price = AsyncMock(return_value=0.0000012)
+    with patch("backend.scanner.detect_whale", return_value=WhaleSignal(5.0, 4.5)):
+        await scanner.whale_pass()
+    assert db.has_open_position("PEPE", strategy="whale") or len(db.get_pending_orders()) == 1
+
+
+@pytest.mark.asyncio
+async def test_whale_pass_skips_no_candles(scanner, db):
+    scanner._liquid_coins = [
+        CoinListing(symbol="PEPE", name="Pepe", price=0.0000012, volume_24h=2e8, change_24h=20.0)
+    ]
+    scanner._market.fetch_candles = AsyncMock(return_value=None)
+    opened = await scanner.whale_pass()
+    assert opened == 0
+    assert not db.has_open_position("PEPE", strategy="whale")

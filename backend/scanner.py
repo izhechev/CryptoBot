@@ -48,6 +48,7 @@ class Scanner:
         self._gecko = GeckoClient(cfg.gecko_api_key)
         self._notifier: Notifier | None = None
         self._regime_bullish = True  # set per-scan by the market-regime check
+        self._liquid_coins: list[CoinListing] = []  # whale fast-lane universe
 
     def set_notifier(self, notifier: Notifier) -> None:
         self._notifier = notifier
@@ -60,7 +61,11 @@ class Scanner:
         self._regime_bullish = await self._market_regime_ok()
         coins = await self._cmc.fetch_all_coins(min_volume_24h=self._cfg.min_volume_24h)
         total = len(coins)
-        logger.info("Fetched %d coins from CMC (volume-filtered)", total)
+        # Refresh the whale fast-lane universe (no extra CMC credits).
+        self._liquid_coins = [c for c in coins
+                              if c.volume_24h >= self._cfg.whale_min_coin_volume_24h]
+        logger.info("Fetched %d coins from CMC (volume-filtered; %d liquid for whale fast lane)",
+                    total, len(self._liquid_coins))
 
         results: list[_CoinResult] = []
         for i, coin in enumerate(coins, start=1):
@@ -372,6 +377,39 @@ class Scanner:
         if self._notifier:
             await self._notifier.send_signal_alert(event, entry_price)
         return True
+
+    async def whale_pass(self) -> int:
+        """One fast whale-only sweep over the liquid universe (refreshed by the full
+        scan). Spikes confirm on 15m candles; the hourly full scan arms retest limits
+        up to 45 min late, so many expire unfilled. Same gates, just on time."""
+        opened = 0
+        for coin in self._liquid_coins:
+            try:
+                df = await self._market.fetch_candles(coin.symbol)
+                if df is None:
+                    continue
+                whale = detect_whale(df, self._cfg)
+                if whale is not None and await self._open_whale(coin, whale, df):
+                    opened += 1
+            except Exception as e:
+                logger.debug("whale pass error %s: %s", coin.symbol, e)
+            await asyncio.sleep(_THROTTLE_DELAY)
+        return opened
+
+    async def whale_loop(self) -> None:
+        """The whale fast lane, alongside the hourly full scan."""
+        await self.init()
+        while True:
+            await asyncio.sleep(self._cfg.whale_scan_interval_minutes * 60)
+            if not self._liquid_coins:
+                continue  # first full scan hasn't populated the universe yet
+            try:
+                start = time.monotonic()
+                opened = await self.whale_pass()
+                logger.info("Whale fast pass: %d liquid coins in %.0fs, %d opened",
+                            len(self._liquid_coins), time.monotonic() - start, opened)
+            except Exception as e:
+                logger.error("Whale fast pass failed: %s", e)
 
     async def loop(self) -> None:
         await self.init()
