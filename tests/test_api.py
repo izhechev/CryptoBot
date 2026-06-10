@@ -82,3 +82,20 @@ async def test_get_config(app, cfg):
     assert data["signal_threshold"] == cfg.signal_threshold
     assert data["whale_take_profit_pct"] == cfg.whale_take_profit_pct
     assert data["tracking_interval_seconds"] == cfg.tracking_interval_seconds
+
+
+@pytest.mark.asyncio
+async def test_get_pending_orders(app, db):
+    from backend.storage import PendingOrder
+    now = datetime.now(timezone.utc)
+    db.save_pending_order(PendingOrder(
+        id=None, coin_symbol="SOL", coin_name="Solana", limit_price=150.0,
+        created_at=now, expires_at=now, exchange="binance",
+        stop_pct=5.0, trail_pct=3.0, volume_ratio=4.2, thrust_pct=3.5,
+    ))
+    resp = await _get(app, "/pending")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["coin_symbol"] == "SOL"
+    assert data[0]["limit_price"] == 150.0

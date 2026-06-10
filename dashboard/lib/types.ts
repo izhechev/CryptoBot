@@ -22,6 +22,18 @@ export interface Position {
   outcome: string | null;
   pnl_pct: number | null;
   strategy: string;
+  scale_price: number | null;  // half banked at this price (scale-out)
+}
+
+export interface PendingOrder {
+  id: number;
+  coin_symbol: string;
+  coin_name: string;
+  limit_price: number;
+  created_at: string;
+  expires_at: string;
+  volume_ratio: number;
+  thrust_pct: number;
 }
 
 export interface StrategyStats {

@@ -48,6 +48,12 @@ export function PositionCard({ position, live }: { position: Position; live: Liv
             <span className="text-[11px] text-[var(--muted)] truncate max-w-[140px]">{position.coin_name}</span>
           )}
           {whale && <span className="text-[11px]">🐋</span>}
+          {position.scale_price != null && (
+            <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 border"
+                  style={{ color: "var(--green)", borderColor: "var(--green)" }}>
+              ½ banked ${fmtPrice(position.scale_price)}
+            </span>
+          )}
         </div>
         <span className="text-lg font-bold tnum" style={{ color: pnlColor }}>
           {up ? "+" : ""}{pnl.toFixed(2)}%

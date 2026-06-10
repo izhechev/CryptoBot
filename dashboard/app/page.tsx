@@ -5,7 +5,7 @@ import { PositionCard } from "@/components/PositionCard";
 import { TradesTable } from "@/components/TradesTable";
 import { ConfigDrawer } from "@/components/ConfigDrawer";
 import { useCryptoBotWs } from "@/lib/useWebSocket";
-import { Position, Stats, BotConfig, LiveUpdate } from "@/lib/types";
+import { Position, PendingOrder, Stats, BotConfig, LiveUpdate } from "@/lib/types";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const WS = API.replace(/^http/, "ws") + "/ws";
@@ -15,6 +15,7 @@ const EMPTY_STATS: Stats = { overall: EMPTY_STRAT, standard: EMPTY_STRAT, whale:
 
 export default function Dashboard() {
   const [positions, setPositions] = useState<Position[]>([]);
+  const [pending, setPending] = useState<PendingOrder[]>([]);
   const [stats, setStats] = useState<Stats>(EMPTY_STATS);
   const [config, setConfig] = useState<BotConfig | null>(null);
   const [live, setLive] = useState<LiveUpdate>({});
@@ -25,12 +26,13 @@ export default function Dashboard() {
 
   const refresh = useCallback(async () => {
     try {
-      const [p, st, cfg] = await Promise.all([
+      const [p, pend, st, cfg] = await Promise.all([
         fetch(`${API}/positions`).then((r) => r.json()),
+        fetch(`${API}/pending`).then((r) => r.json()),
         fetch(`${API}/stats`).then((r) => r.json()),
         fetch(`${API}/config`).then((r) => r.json()),
       ]);
-      setPositions(p); setStats(st); setConfig(cfg);
+      setPositions(p); setPending(pend); setStats(st); setConfig(cfg);
       scanInterval.current = cfg.scan_interval_minutes * 60;
     } catch {
       /* backend not up yet — retry on next tick */
@@ -38,6 +40,12 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  // Working limits arm/expire server-side without a WS event — poll lightly.
+  useEffect(() => {
+    const t = setInterval(refresh, 15000);
+    return () => clearInterval(t);
+  }, [refresh]);
 
   useEffect(() => {
     const t = setInterval(() => {
@@ -89,6 +97,27 @@ export default function Dashboard() {
       </header>
 
       <StatBar stats={stats} connected={connected} nextScanIn={nextScanIn} />
+
+      {/* Working retest limits (armed by the scanner, filled/expired by the tracker) */}
+      {pending.length > 0 && (
+        <section className="px-3 pt-3">
+          <PanelHeader label="Working Limits" count={pending.length} accent="var(--amber)" inline />
+          <div className="mt-2 flex flex-wrap gap-2">
+            {pending.map((o) => (
+              <div key={o.id}
+                   className="border border-dashed bg-[var(--panel)] px-3 py-2 text-[11px] tnum"
+                   style={{ borderColor: "var(--amber)" }}>
+                <span className="font-display font-bold text-[var(--text)]">{o.coin_symbol}</span>
+                {o.coin_name && o.coin_name.toLowerCase() !== o.coin_symbol.toLowerCase() && (
+                  <span className="text-[var(--muted)]"> {o.coin_name}</span>
+                )}
+                <span className="text-[var(--amber)]"> 🐋 limit ${o.limit_price}</span>
+                <span className="text-[var(--faint)]"> · vol {o.volume_ratio.toFixed(1)}x · waits for pullback</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Open positions */}
       <section className="flex flex-col flex-1 min-h-0">

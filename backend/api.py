@@ -59,6 +59,12 @@ def create_app(db: Storage, cfg: Config) -> FastAPI:
     def get_positions(limit: int = 100):
         return [_serialize(p) for p in db.get_all_positions(limit=limit)]
 
+    @app.get("/pending")
+    def get_pending():
+        """Working retest limit orders — armed by the scanner, filled/expired by
+        the tracker. Shown separately from positions (trading-terminal convention)."""
+        return [_serialize(p) for p in db.get_pending_orders()]
+
     @app.get("/positions/{position_id}/ticks")
     def get_ticks(position_id: int):
         return [_serialize(t) for t in db.get_ticks_for_position(position_id)]
