@@ -74,6 +74,9 @@ class Config:
     # Bear-regime spot rule: when BTC is below its 4h trend, spot entries are not
     # blocked outright — they just need an exceptional score (quality, not a quota).
     bear_signal_threshold: float = 80.0   # spot fire threshold while BTC is bearish
+    # Spot kill-switch: spot never measured net-positive after realistic costs in
+    # any backtest (mid-caps or liquid majors). Benched until a sweep goes green.
+    spot_enabled: bool = True
     # Volatility-scaled exits (computed from the coin's own ATR at entry; chandelier-
     # style trailing beats fixed exits by 26-48% profit factor in backtests):
     atr_period: int = 14
@@ -186,6 +189,7 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         whale_max_thrust_pct=float(whale.get("max_thrust_pct", 18.0)),
         whale_detect_window=int(whale.get("detect_window", 5)),
         bear_signal_threshold=float(scoring.get("bear_signal_threshold", 80.0)),
+        spot_enabled=bool(scoring.get("spot_enabled", True)),
         atr_period=int(exits.get("atr_period", 14)),
         atr_stop_multiplier=float(exits.get("atr_stop_multiplier", 2.0)),
         stop_pct_min=float(exits.get("stop_pct_min", 4.0)),

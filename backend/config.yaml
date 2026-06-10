@@ -13,6 +13,9 @@ scan:
   htf_candle_limit: 100
 
 scoring:
+  spot_enabled: false            # BENCHED: spot never measured net-positive after realistic
+                                 # costs (mid-caps OR liquid majors); live confirmed (-1.5%/2tr).
+                                 # Re-enable when a spot sweep goes green.
   pre_filter_threshold: 55       # min technical score before fetching news + calling Gemini
   signal_threshold: 80           # min total score to fire (SPOT SWEEP: 80 beat 75/70 in
                                  # every pairing; top combo 70% win, +0.53%/trade net)

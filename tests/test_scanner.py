@@ -429,3 +429,23 @@ async def test_funding_gate_allows_normal_funding(scanner, db):
                return_value=IndicatorScores(0.0, 0.0, 0.0, 0.0, 0.0, False, 10.0)):
         await scanner.run_once()
     assert db.has_open_position("PEPE", strategy="whale") or len(db.get_pending_orders()) == 1
+
+
+@pytest.mark.asyncio
+async def test_spot_disabled_blocks_standard_but_not_whales(scanner, db):
+    """spot_enabled=False benches the standard strategy; whales unaffected."""
+    scanner._cfg.spot_enabled = False
+    scanner._cmc.fetch_all_coins = AsyncMock(return_value=[
+        CoinListing(symbol="SOL", name="Solana", price=150.0, volume_24h=5e9, change_24h=5.0)
+    ])
+    scanner._market.fetch_candles = AsyncMock(return_value=make_candle_df())
+    scanner._market.fetch_htf_candles = AsyncMock(return_value=make_candle_df(100))
+    scanner._market.fetch_current_price = AsyncMock(return_value=150.0)
+    with patch("backend.scanner.compute_indicators",
+               return_value=IndicatorScores(30.0, 20.0, 15.0, 15.0, 20.0, True, 100.0)), \
+         patch("backend.scanner.detect_whale",
+               return_value=WhaleSignal(volume_ratio=5.0, price_thrust_pct=4.5)):
+        await scanner.run_once()
+    signals = db.get_recent_signals()
+    assert all(s.strategy == "whale" for s in signals)  # no standard fired
+    assert db.has_open_position("SOL", strategy="whale") or len(db.get_pending_orders()) == 1

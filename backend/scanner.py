@@ -210,6 +210,8 @@ class Scanner:
                 result.whale_fired = await self._open_whale(coin, whale, df)
 
         # --- Standard strategy: indicators + higher-timeframe confluence ---
+        if not self._cfg.spot_enabled:
+            return result  # benched: no measured net-positive spot config yet
         df_htf = await self._market.fetch_htf_candles(coin.symbol)
         ind_scores = compute_indicators(df, self._cfg, df_htf=df_htf)
         result.technical_score = ind_scores.total
