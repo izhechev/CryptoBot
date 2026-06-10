@@ -63,7 +63,15 @@ class Tracker:
                     self._db.update_position_peak(pos.id, price)
 
                 outcome = self._trader.check_position(pos, price)
-                if outcome is not None:
+                if outcome == TradeOutcome.SCALE:
+                    # Bank the scale fraction here; the rest runs with a breakeven
+                    # floor + trail (sweep: beat closing in full by +0.5-1.2%/trade).
+                    self._db.update_position_scale(pos.id, price)
+                    pos.scale_price = price
+                    logger.info("Scaled out %s [%s]: banked %.0f%% at %s, runner trails",
+                                pos.coin_symbol, pos.strategy,
+                                self._cfg.scale_out_fraction * 100, fmt_price(price))
+                elif outcome is not None:
                     exit_price = self._trader.exit_price_for(pos, outcome, price)
                     await self._close(pos, exit_price, outcome)
             except Exception as e:

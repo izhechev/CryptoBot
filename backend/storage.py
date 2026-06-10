@@ -37,6 +37,8 @@ class Position:
     stop_pct: Optional[float] = None    # stop-loss distance for THIS coin's volatility
     trail_pct: Optional[float] = None   # trailing give-back once the trade is armed
     peak_price: Optional[float] = None  # high-water mark while open (trailing reference)
+    scale_price: Optional[float] = None  # price where half was banked (scale-out); the
+                                         # rest runs with a breakeven floor + trail
 
 
 @dataclass
@@ -104,6 +106,7 @@ def _position_from_row(r) -> Position:
         outcome=r["outcome"], pnl_pct=r["pnl_pct"], strategy=r["strategy"],
         exchange=r["exchange"], coin_name=(r["coin_name"] or ""),
         stop_pct=r["stop_pct"], trail_pct=r["trail_pct"], peak_price=r["peak_price"],
+        scale_price=r["scale_price"],
     )
 
 
@@ -145,7 +148,8 @@ class Storage:
                     coin_name TEXT,
                     stop_pct REAL,
                     trail_pct REAL,
-                    peak_price REAL
+                    peak_price REAL,
+                    scale_price REAL
                 );
                 CREATE TABLE IF NOT EXISTS price_ticks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -179,7 +183,8 @@ class Storage:
             # Migration: add positions.exchange to DBs created before it existed.
             cols = [r[1] for r in conn.execute("PRAGMA table_info(positions)").fetchall()]
             for col, ddl in (("exchange", "TEXT"), ("coin_name", "TEXT"),
-                             ("stop_pct", "REAL"), ("trail_pct", "REAL"), ("peak_price", "REAL")):
+                             ("stop_pct", "REAL"), ("trail_pct", "REAL"),
+                             ("peak_price", "REAL"), ("scale_price", "REAL")):
                 if col not in cols:
                     conn.execute(f"ALTER TABLE positions ADD COLUMN {col} {ddl}")
 
@@ -210,10 +215,12 @@ class Storage:
             cur = conn.execute(
                 "INSERT INTO positions (signal_id, coin_symbol, entry_price, entry_at, "
                 "exit_price, exit_at, outcome, pnl_pct, strategy, exchange, coin_name, "
-                "stop_pct, trail_pct, peak_price) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "stop_pct, trail_pct, peak_price, scale_price) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (pos.signal_id, pos.coin_symbol, pos.entry_price, _dts(pos.entry_at),
                  pos.exit_price, _dts(pos.exit_at), pos.outcome, pos.pnl_pct, pos.strategy,
-                 pos.exchange, pos.coin_name, pos.stop_pct, pos.trail_pct, pos.peak_price),
+                 pos.exchange, pos.coin_name, pos.stop_pct, pos.trail_pct, pos.peak_price,
+                 pos.scale_price),
             )
             return Position(**{**pos.__dict__, "id": cur.lastrowid})
 
@@ -273,6 +280,12 @@ class Storage:
                 (coin_symbol,),
             ).fetchone()
             return (row["outcome"], _dt(row["exit_at"])) if row else None
+
+    def update_position_scale(self, position_id: int, scale_price: float) -> None:
+        """Record the scale-out fill: half banked at this price; the rest runs."""
+        with self._conn() as conn:
+            conn.execute("UPDATE positions SET scale_price=? WHERE id=?",
+                         (scale_price, position_id))
 
     def update_position_peak(self, position_id: int, peak_price: float) -> None:
         """Persist a new high-water mark for an open position (trailing reference)."""

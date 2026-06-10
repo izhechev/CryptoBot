@@ -10,6 +10,7 @@ class TradeOutcome(str, Enum):
     WIN = "win"
     LOSS = "loss"
     TIMEOUT = "timeout"
+    SCALE = "scale"  # not a close: bank the scale fraction, let the rest run
 
 
 def roi_target(cfg: Config, strategy: str, elapsed_min: float) -> float:
@@ -74,11 +75,13 @@ class PaperTrading:
 
     def check_position(self, pos: Position, current_price: float) -> Optional[TradeOutcome]:
         """Exit logic, in priority order:
-        1. armed trailing exit — once the trade has PEAKED past trail_arm_pct, the
-           ROI cap is lifted (let the runner run) and we exit when price gives back
-           trail_pct from the high-water mark;
-        2. time-decaying ROI target (books fading winners that never armed);
-        3. volatility-scaled stop-loss; 4. max-hold timeout."""
+        1. scaled runner — after a scale-out, the rest runs with a breakeven floor
+           + trail from the peak (SCALE is returned at the first ROI target when
+           scale-out is enabled; sweep: +0.5-1.2%/trade over closing in full);
+        2. armed trailing exit — once the trade has PEAKED past trail_arm_pct, the
+           ROI cap is lifted and we exit on a trail_pct give-back from the peak;
+        3. time-decaying ROI target (books fading winners that never armed);
+        4. volatility-scaled stop-loss; 5. max-hold timeout."""
         _, _, max_hold_hours = self._exit_params(pos.strategy)
         pnl_pct = (current_price - pos.entry_price) / pos.entry_price * 100
 
@@ -89,13 +92,24 @@ class PaperTrading:
 
         peak = pos.peak_price or pos.entry_price
         peak_pnl = (peak - pos.entry_price) / pos.entry_price * 100
-        armed = bool(pos.trail_pct) and peak_pnl >= self._cfg.trail_arm_pct
+        trail_pct = pos.trail_pct or self._cfg.trail_pct_min
 
+        if pos.scale_price is not None:
+            # Runner half: breakeven floor + trail; blended P&L is positive by
+            # construction (the banked half was at the ROI target).
+            exit_level = max(pos.entry_price, peak * (1 - trail_pct / 100))
+            if current_price <= exit_level:
+                return TradeOutcome.WIN
+            if elapsed >= timedelta(hours=max_hold_hours):
+                return TradeOutcome.TIMEOUT
+            return None
+
+        armed = bool(pos.trail_pct) and peak_pnl >= self._cfg.trail_arm_pct
         if armed:
-            if current_price <= peak * (1 - pos.trail_pct / 100):
+            if current_price <= peak * (1 - trail_pct / 100):
                 return TradeOutcome.WIN if pnl_pct > 0 else TradeOutcome.LOSS
         elif pnl_pct >= self._roi_target(pos.strategy, elapsed.total_seconds() / 60):
-            return TradeOutcome.WIN
+            return TradeOutcome.SCALE if self._cfg.scale_out_enabled else TradeOutcome.WIN
         if pnl_pct <= -self._stop_pct_for(pos):
             return TradeOutcome.LOSS
         if elapsed >= timedelta(hours=max_hold_hours):
@@ -128,7 +142,13 @@ class PaperTrading:
         ))
 
     def close_position(self, pos: Position, current_price: float, outcome: TradeOutcome) -> None:
-        pnl_pct = (current_price - pos.entry_price) / pos.entry_price * 100
+        if pos.scale_price is not None:
+            # Blended P&L: the banked fraction at the scale price + the runner here.
+            f = self._cfg.scale_out_fraction
+            pnl_pct = (f * (pos.scale_price - pos.entry_price)
+                       + (1 - f) * (current_price - pos.entry_price)) / pos.entry_price * 100
+        else:
+            pnl_pct = (current_price - pos.entry_price) / pos.entry_price * 100
         self._db.close_position(
             position_id=pos.id,
             exit_price=current_price,

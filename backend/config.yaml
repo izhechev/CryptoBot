@@ -45,6 +45,10 @@ exits:
   trail_pct_min: 2.0
   trail_pct_max: 6.0
   trail_arm_pct: 4.0            # arm the trail once the trade has peaked past this
+  # SWEEP VERDICT (liquid universe): scale-out beat closing in full by +0.5-1.2%/trade
+  # in every real-sample combo — bank half at the first ROI target, trail the rest.
+  scale_out: true
+  scale_fraction: 0.5
                                 # (sweep: 4.0 edged 6.0/8.0 at every volume floor)
   # Re-entry cooldowns: don't re-buy the same coin right after a close — with the
   # windowed whale detection, the spike that just stopped out is still detectable.

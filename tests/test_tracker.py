@@ -228,3 +228,39 @@ async def test_retest_pending_expires(tracker, db):
     await tracker.run_once()
     assert not db.has_open_position("RTS", strategy="whale")
     assert db.get_pending_orders() == []  # expired and removed, not filled
+
+
+@pytest.mark.asyncio
+async def test_scale_out_banks_half_then_runner_trails(tracker, db):
+    """With scale-out on: first ROI hit banks half (position STAYS OPEN); a later
+    trail exit closes with the blended P&L."""
+    tracker._cfg.scale_out_enabled = True
+    pos = make_v4_position(db, "SCL", 100.0, stop_pct=6.0, trail_pct=4.0, hours_ago=2)
+    # +5% at 2h >= the +4% whale rung -> SCALE, not close
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"SCL": 105.0})
+    await tracker.run_once()
+    assert len(db.get_open_positions()) == 1
+    assert db.get_open_positions()[0].scale_price == pytest.approx(105.0)
+    # runner rallies to 120 (peak), then gives back past the trail -> blended close
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"SCL": 120.0})
+    await tracker.run_once()
+    assert len(db.get_open_positions()) == 1  # at the high, still riding
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"SCL": 114.0})  # < 120*0.96
+    await tracker.run_once()
+    closed = db.get_all_positions()[0]
+    assert closed.outcome == "win"
+    assert closed.pnl_pct == pytest.approx(0.5 * 5.0 + 0.5 * 14.0, abs=0.1)  # +9.5%
+
+
+@pytest.mark.asyncio
+async def test_scale_out_runner_breakeven_floor(tracker, db):
+    """After scaling, a crash exits the runner at the breakeven floor — blended
+    result keeps the banked half instead of round-tripping to a loss."""
+    tracker._cfg.scale_out_enabled = True
+    pos = make_v4_position(db, "SCL", 100.0, stop_pct=6.0, trail_pct=4.0, hours_ago=2)
+    db.update_position_scale(pos.id, 105.0)  # already scaled at +5%
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"SCL": 96.0})  # crash
+    await tracker.run_once()
+    closed = db.get_all_positions()[0]
+    assert closed.outcome == "win"
+    assert closed.pnl_pct == pytest.approx(0.5 * 5.0 + 0.5 * (-4.0), abs=0.1)  # +0.5%
