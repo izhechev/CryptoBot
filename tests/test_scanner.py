@@ -449,3 +449,22 @@ async def test_spot_disabled_blocks_standard_but_not_whales(scanner, db):
     signals = db.get_recent_signals()
     assert all(s.strategy == "whale" for s in signals)  # no standard fired
     assert db.has_open_position("SOL", strategy="whale") or len(db.get_pending_orders()) == 1
+
+
+@pytest.mark.asyncio
+async def test_whale_skips_tokenized_stocks(scanner, db):
+    """Tokenized equities (xStocks) follow stock-market hours/beta — crypto
+    momentum logic must not trade them (live: CRCLX -4.04%)."""
+    scanner._cmc.fetch_all_coins = AsyncMock(return_value=[
+        CoinListing(symbol="CRCLX", name="Circle tokenized stock (xStock)",
+                    price=83.0, volume_24h=5e7, change_24h=4.0)
+    ])
+    scanner._market.fetch_candles = AsyncMock(return_value=make_candle_df())
+    scanner._market.fetch_htf_candles = AsyncMock(return_value=make_candle_df(100))
+    scanner._market.fetch_current_price = AsyncMock(return_value=83.0)
+    with patch("backend.scanner.detect_whale", return_value=WhaleSignal(5.0, 4.5)), \
+         patch("backend.scanner.compute_indicators",
+               return_value=IndicatorScores(0.0, 0.0, 0.0, 0.0, 0.0, False, 10.0)):
+        await scanner.run_once()
+    assert not db.has_open_position("CRCLX", strategy="whale")
+    assert db.get_pending_orders() == []

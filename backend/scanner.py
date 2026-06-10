@@ -314,6 +314,11 @@ class Scanner:
         # edge) and net positive on liquid ones — only ride coins this liquid.
         if coin.volume_24h < self._cfg.whale_min_coin_volume_24h:
             return False
+        # Tokenized equities (xStocks etc.) trade on stock-market hours and equity
+        # beta — crypto momentum logic misreads them (live: CRCLX -4.04%).
+        name = coin.name.lower()
+        if "xstock" in name or "tokenized stock" in name or "tokenized equity" in name:
+            return False
         if self._in_cooldown(coin.symbol):
             return False
         if not await self._book_ok(coin):  # cheap, before gecko/Gemini calls
