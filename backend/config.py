@@ -113,6 +113,9 @@ class Config:
     # BUYING (taker buys >= this share of volume) — a spike on seller-dominated
     # tape is distribution, not accumulation. Fails open where data is unavailable.
     whale_min_taker_buy_share: float = 0.55
+    # Funding-rate crowding veto: extreme positive perp funding = crowded longs,
+    # which historically precedes deleveraging flushes — don't buy a spike into it.
+    whale_max_funding_rate: float = 0.001   # per 8h (0.001 = 0.1%; neutral is ~0.01%)
     # Fast whale lane: a whale-only pass over the LIQUID universe every N minutes
     # (the full scan is hourly, but spikes confirm on 15m candles — scanning the
     # small liquid subset often catches them at the confirmation candle).
@@ -203,6 +206,7 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         whale_min_coin_volume_24h=float(whale.get("min_coin_volume_24h", 10_000_000.0)),
         whale_min_taker_buy_share=float(whale.get("min_taker_buy_share", 0.55)),
         whale_scan_interval_minutes=int(whale.get("scan_interval_minutes", 15)),
+        whale_max_funding_rate=float(whale.get("max_funding_rate", 0.001)),
         tracking_interval_seconds=int(tracking.get("interval_seconds", 60)),
         tracking_timeframe=tracking.get("candle_timeframe", "1m"),
         tracking_candle_limit=int(tracking.get("candle_limit", 60)),

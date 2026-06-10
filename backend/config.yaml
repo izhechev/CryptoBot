@@ -98,6 +98,8 @@ whale:
                                 # volume on Binance-routed coins; seller-led spikes = distribution)
   scan_interval_minutes: 15     # fast whale-only pass over the liquid universe (full scan is
                                 # hourly; this catches spikes at their confirmation candle)
+  max_funding_rate: 0.001       # veto if the coin's perp funding >= 0.1%/8h — crowded longs
+                                # precede deleveraging flushes (neutral funding is ~0.01%)
   entry_mode: retest            # SWEEP v2: retest+obedient+5x was the ONLY green whale
                                 # config (100% win, +2.0%/trade net; n=4 — thin sample).
                                 # "chase" = old buy-at-market behavior.

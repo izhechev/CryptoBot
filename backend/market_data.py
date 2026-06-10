@@ -146,6 +146,21 @@ class MarketData:
             return None
         return taker_buy / total
 
+    async def fetch_funding_rate(self, symbol: str) -> Optional[float]:
+        """Current perp funding rate (per 8h, e.g. 0.0001 = 0.01%) from Binance
+        futures. Extreme positive funding = crowded longs — historically precedes
+        deleveraging flushes, the worst tape to buy a spike into. None when the
+        coin has no Binance perp (callers fail open)."""
+        binance = next((e for e in self._exchanges if e.id == "binance"), None)
+        if binance is None:
+            return None
+        try:
+            fr = await binance.fetch_funding_rate(f"{symbol}/USDT:USDT")
+            rate = fr.get("fundingRate")
+            return float(rate) if rate is not None else None
+        except Exception:
+            return None
+
     async def fetch_current_price(self, symbol: str, quote: str = "USDT",
                                   exchange_id: Optional[str] = None) -> Optional[float]:
         """Fetch current last price. None if no exchange lists the pair live.

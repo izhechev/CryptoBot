@@ -41,6 +41,7 @@ def scanner(cfg, db):
     s._market.exchange_id_for = MagicMock(return_value="binance")  # sync method
     s._market.fetch_book_stats = AsyncMock(return_value=(0.1, 1.5))  # healthy book
     s._market.fetch_taker_buy_share = AsyncMock(return_value=None)  # no data -> fail open
+    s._market.fetch_funding_rate = AsyncMock(return_value=None)  # no perp -> fail open
     s._gecko = AsyncMock()
     s._gecko.fetch_price = AsyncMock(return_value=None)  # fall back to CMC price
     s._gecko.fetch_change_7d = AsyncMock(return_value=0.0)  # not pumped
@@ -404,3 +405,27 @@ async def test_whale_pass_skips_no_candles(scanner, db):
     opened = await scanner.whale_pass()
     assert opened == 0
     assert not db.has_open_position("PEPE", strategy="whale")
+
+
+@pytest.mark.asyncio
+async def test_funding_gate_vetoes_crowded_longs(scanner, db):
+    """Extreme positive perp funding (crowded longs) -> whale entry vetoed."""
+    _whale_setup(scanner)
+    scanner._market.fetch_funding_rate = AsyncMock(return_value=0.0025)  # 0.25%/8h
+    with patch("backend.scanner.detect_whale", return_value=WhaleSignal(5.0, 4.5)), \
+         patch("backend.scanner.compute_indicators",
+               return_value=IndicatorScores(0.0, 0.0, 0.0, 0.0, 0.0, False, 10.0)):
+        await scanner.run_once()
+    assert not db.has_open_position("PEPE", strategy="whale")
+    assert db.get_pending_orders() == []
+
+
+@pytest.mark.asyncio
+async def test_funding_gate_allows_normal_funding(scanner, db):
+    _whale_setup(scanner)
+    scanner._market.fetch_funding_rate = AsyncMock(return_value=0.0001)  # neutral 0.01%
+    with patch("backend.scanner.detect_whale", return_value=WhaleSignal(5.0, 4.5)), \
+         patch("backend.scanner.compute_indicators",
+               return_value=IndicatorScores(0.0, 0.0, 0.0, 0.0, 0.0, False, 10.0)):
+        await scanner.run_once()
+    assert db.has_open_position("PEPE", strategy="whale") or len(db.get_pending_orders()) == 1
