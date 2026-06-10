@@ -30,12 +30,15 @@ _GROUNDED_MODELS = [
 # requests/day) for the same answer.
 _CATALYST_CACHE_TTL = 6 * 3600  # seconds
 _CATALYST_PROMPT = """Search the web for news about {name} ({symbol}) cryptocurrency. \
-Consider ONLY news published in the last 48 hours; ignore anything older.
+Consider ONLY news published in the last 48 hours; ignore anything older. \
+Ignore generic price-prediction, forecast, or technical-analysis articles — only \
+concrete events count (exchange listing, partnership, product launch, hack, \
+regulatory action, token migration/rebrand).
 Classify the single most important recent catalyst and judge sentiment for the next 24 hours.
 Reply in EXACTLY this format and nothing else:
-LATEST_NEWS_DATE: <date of the most recent item, or NONE>
+LATEST_NEWS_DATE: <date of the most recent item in YYYY-MM-DD form, or NONE>
 CATALYST: <one of: listing, partnership, launch, migration, none>
-SENTIMENT: <integer 0-100, 50=neutral; if no news in the last 48h, output 50>
+SENTIMENT: <integer 0-100, 50=neutral; if no qualifying news in the last 48h, output 50>
 REASON: <one short sentence>"""
 _VALID_CATALYSTS = {"listing", "partnership", "launch", "migration", "none"}
 
@@ -112,7 +115,7 @@ class NewsClient:
         return _NEUTRAL_CATALYST
 
     @staticmethod
-    def _parse_catalyst(text: str) -> CatalystResult:
+    def _parse_catalyst(text: str, max_age_hours: float = 72.0) -> CatalystResult:
         def grab(key: str, default: str) -> str:
             m = re.search(rf"{key}\s*:\s*(.+)", text, re.IGNORECASE)
             return m.group(1).strip() if m else default
@@ -124,6 +127,21 @@ class NewsClient:
         m = re.search(r"\d+", grab("SENTIMENT", "50"))
         sentiment = max(0.0, min(100.0, float(m.group()))) if m else 50.0
         analyzed = date.strip().upper() != "NONE"
+
+        # Don't TRUST the model's recency claim — verify it. Stale articles (the
+        # 3-week-old MAT pattern) get downgraded to neutral instead of moving trades.
+        if analyzed:
+            try:
+                import pandas as pd
+                parsed = pd.to_datetime(date, errors="coerce", utc=True)
+                if parsed is not pd.NaT:
+                    age_h = (pd.Timestamp.now(tz="UTC") - parsed).total_seconds() / 3600
+                    if age_h > max_age_hours:
+                        return CatalystResult(50.0, "none", date,
+                                              f"Newest item is {age_h / 24:.0f}d old — stale, ignored.",
+                                              analyzed=False)
+            except Exception:
+                pass  # unparseable date: keep the model's verdict
         return CatalystResult(sentiment, catalyst, date, grab("REASON", ""), analyzed)
 
     async def _fetch_cryptocompare(self, symbol: str, limit: int) -> list[str]:

@@ -116,3 +116,30 @@ def test_parse_catalyst_no_recent_news():
     assert r.analyzed is False
     assert r.sentiment == 50.0
     assert r.catalyst == "none"
+
+
+def test_parse_catalyst_downgrades_stale_date():
+    """Gemini reporting a weeks-old article (the MAT pattern) -> neutral, not a signal."""
+    from backend.news import NewsClient
+    text = ("LATEST_NEWS_DATE: 2026-05-01\n"
+            "CATALYST: partnership\n"
+            "SENTIMENT: 85\n"
+            "REASON: Old partnership news.")
+    r = NewsClient._parse_catalyst(text)
+    assert r.analyzed is False
+    assert r.sentiment == 50.0
+    assert "stale" in r.reason
+
+
+def test_parse_catalyst_keeps_fresh_date():
+    from backend.news import NewsClient
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    text = (f"LATEST_NEWS_DATE: {today}\n"
+            "CATALYST: listing\n"
+            "SENTIMENT: 80\n"
+            "REASON: Fresh listing.")
+    r = NewsClient._parse_catalyst(text)
+    assert r.analyzed is True
+    assert r.sentiment == 80.0
+    assert r.catalyst == "listing"
