@@ -48,9 +48,13 @@ class Tracker:
                 price = prices.get(pos.coin_symbol)
                 if price is None:
                     # No CoinGecko price this cycle — still enforce the time-based
-                    # exit so a position can't get stuck open forever.
+                    # exit so a position can't get stuck open forever. Fill at the
+                    # last price we actually saw, not a pretend break-even at entry
+                    # (entry only if the feed was dark from the very first cycle).
                     if self._trader.check_timeout(pos):
-                        await self._close(pos, pos.entry_price, TradeOutcome.TIMEOUT)
+                        last = self._db.last_tick_price(pos.id)
+                        await self._close(pos, last if last is not None else pos.entry_price,
+                                          TradeOutcome.TIMEOUT)
                     continue
 
                 self._trader.record_tick(pos, price)
