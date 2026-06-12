@@ -2,7 +2,7 @@ import pytest
 from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock
 from backend.tracker import Tracker
-from backend.storage import Storage, Signal, Position
+from backend.storage import Storage, Signal, Position, PriceTick
 
 
 def make_open_position(db: Storage, symbol: str, entry_price: float,
@@ -106,6 +106,21 @@ async def test_no_price_times_out(tracker, db):
     closed = db.get_all_positions()[0]
     assert closed.outcome == "timeout"
     assert closed.exit_price == pytest.approx(0.743)  # flat at entry
+
+
+@pytest.mark.asyncio
+async def test_dark_feed_timeout_closes_at_last_tick(tracker, db):
+    """Feed went dark mid-trade: the timeout fill is the last REAL price we saw,
+    not a pretend break-even at entry (the RAD +0.00% bug)."""
+    pos = make_open_position(db, "RAD", 0.2246, hours_ago=13, strategy="whale")
+    db.save_price_tick(PriceTick(id=None, position_id=pos.id, price=0.2192,
+                                 checked_at=datetime.now(timezone.utc)))
+    tracker._gecko.fetch_prices = AsyncMock(return_value={})
+    await tracker.run_once()
+    closed = db.get_all_positions()[0]
+    assert closed.outcome == "timeout"
+    assert closed.exit_price == pytest.approx(0.2192)
+    assert closed.pnl_pct == pytest.approx(-2.4, abs=0.1)
 
 
 @pytest.mark.asyncio
