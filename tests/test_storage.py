@@ -1,5 +1,5 @@
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from backend.storage import Storage, Signal, Position, PriceTick, ScanLog
 
 
@@ -99,3 +99,27 @@ def test_has_open_position_for_coin(db):
                    exit_price=None, exit_at=None, outcome=None, pnl_pct=None)
     db.save_position(pos)
     assert db.has_open_position("BNB")
+
+
+def _open_pos(db, symbol="TCK", entry=1.0):
+    sig = db.save_signal(Signal(id=None, coin_symbol=symbol, coin_name=symbol,
+                                total_score=90.0, technical_score=80.0, news_score=50.0,
+                                gemini_explanation="x", fired_at=datetime.now(timezone.utc)))
+    return db.save_position(Position(
+        id=None, signal_id=sig.id, coin_symbol=symbol, entry_price=entry,
+        entry_at=datetime.now(timezone.utc), exit_price=None, exit_at=None,
+        outcome=None, pnl_pct=None))
+
+
+def test_last_tick_price_returns_latest(db):
+    pos = _open_pos(db)
+    t0 = datetime.now(timezone.utc)
+    db.save_price_tick(PriceTick(id=None, position_id=pos.id, price=1.05, checked_at=t0))
+    db.save_price_tick(PriceTick(id=None, position_id=pos.id, price=0.97,
+                                 checked_at=t0 + timedelta(seconds=3)))
+    assert db.last_tick_price(pos.id) == pytest.approx(0.97)
+
+
+def test_last_tick_price_none_without_ticks(db):
+    pos = _open_pos(db)
+    assert db.last_tick_price(pos.id) is None

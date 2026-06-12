@@ -335,6 +335,17 @@ class Storage:
             return [PriceTick(id=r["id"], position_id=r["position_id"],
                               price=r["price"], checked_at=_dt(r["checked_at"])) for r in rows]
 
+    def last_tick_price(self, position_id: int) -> Optional[float]:
+        """Most recent recorded tick price for a position, or None if no ticks.
+        The honest fill for a dark-feed timeout: the last price we actually saw."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT price FROM price_ticks WHERE position_id=? "
+                "ORDER BY checked_at DESC, id DESC LIMIT 1",
+                (position_id,),
+            ).fetchone()
+            return row["price"] if row else None
+
     def save_scan_log(self, log: ScanLog) -> ScanLog:
         with self._conn() as conn:
             cur = conn.execute(
