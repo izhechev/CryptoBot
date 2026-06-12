@@ -368,6 +368,30 @@ _SPOT_SWEEP_GRID = {
 }
 
 
+# Exit-shape sweep ("let winners run"): entries fixed at the live config, exits
+# varied. Live sample showed avg win +2.5% vs avg loss -4.5% — does a slower ROI
+# decay / wider trail / no late floor beat the current table?
+_ROI_TABLES = {
+    "current":    [(180.0, 2.0), (60.0, 4.0), (20.0, 7.0), (0.0, 15.0)],
+    "slow-decay": [(180.0, 4.0), (60.0, 7.0), (20.0, 10.0), (0.0, 15.0)],
+    "trail-only": [(0.0, 15.0)],
+}
+
+_EXIT_SWEEP_GRID = {
+    "whale_roi": list(_ROI_TABLES.values()),
+    "trail_arm_pct": [4.0, 6.0, 8.0],
+    "atr_trail_multiplier": [1.5, 2.5],
+    "scale_out_enabled": [False, True],
+}
+
+
+def _roi_label(table: list) -> str:
+    for name, t in _ROI_TABLES.items():
+        if t == table:
+            return name
+    return "custom"
+
+
 def precompute_spot_scores(cfg: Config, df: pd.DataFrame,
                            regime: Optional[pd.Series]) -> list[tuple[int, float, bool]]:
     """One pass of the (expensive) indicator stack per coin: (step_idx, technical
@@ -526,6 +550,39 @@ def run_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
     print("\n(net_exp = average net P&L per trade after fees+slippage; higher is better)")
 
 
+def run_exit_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
+                   regime: Optional[pd.Series], holdout: int = 0) -> None:
+    """Grid-search whale EXIT shape (ROI table, trail arm, trail width, scale-out)
+    with entries fixed at the live config. Adoption rule: the live config changes
+    only if a variant beats the current exits on the HOLDOUT, not just in-sample."""
+    keys = list(_EXIT_SWEEP_GRID)
+    combos = list(itertools.product(*_EXIT_SWEEP_GRID.values()))
+    print(f"Sweeping {len(combos)} whale-exit combos over {len(histories)} coins"
+          + (f" (holdout: last {holdout // _CANDLES_PER_DAY} days)" if holdout else "") + "...")
+
+    def evaluate(combo, segment: str) -> list[SimTrade]:
+        c = replace(cfg, **dict(zip(keys, combo)))
+        trades: list[SimTrade] = []
+        for sym, df in histories.items():
+            s, e = _segment_bounds(len(df), holdout, segment)
+            trades.extend(simulate_coin(c, sym, df, regime, strategies="whale",
+                                        scan_start=s, scan_end=e))
+        return trades
+
+    rows = []
+    for combo in combos:
+        n, wr, net = _trade_stats(evaluate(combo, "train" if holdout else "all"))
+        rows.append((combo, n, wr, net))
+    rows.sort(key=lambda r: r[3], reverse=True)
+    print(f"\n{'roi':>10} {'arm':>4} {'trail_x':>7} {'scale':>5} | {'trades':>6} {'win%':>5} {'net_exp':>8}")
+    for combo, n, wr, net in rows:
+        print(f"{_roi_label(combo[0]):>10} {combo[1]:>4} {combo[2]:>7} {str(combo[3]):>5} | "
+              f"{n:>6} {wr:>4.0f}% {net:>+7.2f}%")
+    if holdout:
+        _print_holdout(rows, evaluate, holdout)
+    print("\n(net_exp = average net P&L per trade after fees+slippage; higher is better)")
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser(description="Replay history through the live logic")
     ap.add_argument("--days", type=int, default=21)
@@ -534,7 +591,7 @@ async def main() -> None:
                     help="skip the top-N market-cap coins (test mid/small caps, "
                          "where the live bot actually finds whales)")
     ap.add_argument("--strategy", choices=["both", "whale", "spot"], default="both")
-    ap.add_argument("--sweep", choices=["whale", "spot"], default=None,
+    ap.add_argument("--sweep", choices=["whale", "spot", "whale-exits"], default=None,
                     help="grid-search parameters for one strategy instead of a single run")
     ap.add_argument("--min-volume", type=float, default=0,
                     help="only test coins with at least this much 24h USD volume "
@@ -579,6 +636,9 @@ async def main() -> None:
         return
     if args.sweep == "spot":
         run_spot_sweep(cfg, histories, regime, holdout=holdout)
+        return
+    if args.sweep == "whale-exits":
+        run_exit_sweep(cfg, histories, regime, holdout=holdout)
         return
 
     trades: list[SimTrade] = []

@@ -233,3 +233,31 @@ def test_scale_out_disabled_books_full_win(cfg):
     df.iloc[0, df.columns.get_loc("high")] = 116.0
     idx, price, outcome = simulate_exit(cfg, df, 0, 100.0, "whale", 8.0, 4.0)
     assert price == pytest.approx(115.0)
+
+
+def test_current_roi_books_late_floor(cfg):
+    """Current decaying table: +3% highs after 3h book at the +2% rung."""
+    df = candles(60)
+    df.iloc[16:, df.columns.get_loc("high")] = 103.0  # +3% highs from hour 4 on
+    idx, price, outcome = simulate_exit(cfg, df, 0, 100.0, "whale", 6.0, 4.0)
+    assert outcome == "win"
+    assert price == pytest.approx(102.0)  # the decayed +2% target
+
+
+def test_trail_only_roi_skips_late_floor(cfg):
+    """Trail-only table: the same +3% does NOT book (no late floor) — the trade
+    rides to the max-hold timeout instead. This is the 'let winners run' shape."""
+    from dataclasses import replace
+    c = replace(cfg, whale_roi=[(0.0, 15.0)])
+    df = candles(60)
+    df.iloc[16:, df.columns.get_loc("high")] = 103.0
+    idx, price, outcome = simulate_exit(c, df, 0, 100.0, "whale", 6.0, 4.0)
+    assert outcome == "timeout"
+
+
+def test_exit_sweep_grid_shape():
+    import itertools
+    from backend.backtest import _EXIT_SWEEP_GRID, _ROI_TABLES
+    combos = list(itertools.product(*_EXIT_SWEEP_GRID.values()))
+    assert len(combos) == 36  # 3 roi tables x 3 arms x 2 trails x 2 scale
+    assert set(_ROI_TABLES) == {"current", "slow-decay", "trail-only"}
