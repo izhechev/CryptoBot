@@ -123,6 +123,13 @@ class Config:
     # (the full scan is hourly, but spikes confirm on 15m candles — scanning the
     # small liquid subset often catches them at the confirmation candle).
     whale_scan_interval_minutes: int = 15
+    # Correlated-exposure cap: 12 concurrent whale longs = one market-beta bet —
+    # one overnight dip became six stop-outs. The backtester can't validate this
+    # value (it has no portfolio state); 6 is a judgment call, revisit with live data.
+    whale_max_open: int = 6
+    # Flat assumed round-trip cost (fees + slippage) subtracted for HONEST net
+    # reporting — matches the backtest's average measured cost on >=$10M/day coins.
+    assumed_cost_pct: float = 0.5
 
 
 def _parse_roi(raw: dict | None, default_pct: float) -> list:
@@ -144,6 +151,7 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
     tracking = raw.get("tracking", {})
     exits = raw.get("exits", {})
     book = raw.get("book", {})
+    report = raw.get("report", {})
 
     return Config(
         scan_interval_minutes=scan["interval_minutes"],
@@ -210,6 +218,8 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         whale_min_coin_volume_24h=float(whale.get("min_coin_volume_24h", 10_000_000.0)),
         whale_min_taker_buy_share=float(whale.get("min_taker_buy_share", 0.55)),
         whale_scan_interval_minutes=int(whale.get("scan_interval_minutes", 15)),
+        whale_max_open=int(whale.get("max_open", 6)),
+        assumed_cost_pct=float(report.get("assumed_cost_pct", 0.5)),
         whale_max_funding_rate=float(whale.get("max_funding_rate", 0.001)),
         tracking_interval_seconds=int(tracking.get("interval_seconds", 60)),
         tracking_timeframe=tracking.get("candle_timeframe", "1m"),

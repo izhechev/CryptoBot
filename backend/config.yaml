@@ -119,6 +119,8 @@ whale:
   take_profit_pct: 15.0
   stop_loss_pct: 7.0
   max_hold_hours: 12
+  max_open: 6                   # cap concurrent whale positions — 12 overnight longs
+                                # turned one dip into six stop-outs (one beta bet)
   # Whales fade fastest — decay the target hard so you bank the thrust early.
   roi:
     0: 15.0       # +15% in the first 20 min
@@ -129,3 +131,9 @@ whale:
   ema_period: 20                # only ride a thrust while price is above this EMA (skip downtrend bounces)
   min_candle_volume_usd: 10000  # the spike candle must move >= this much $ (kills dead-coin noise)
   max_single_candle_pct: 15     # skip if the latest candle alone jumped >= this % (blow-off top)
+
+# Honest reporting: flat assumed round-trip cost (fees + slippage) subtracted from
+# gross P&L in the digest and /stats. Matches the backtest's average measured cost
+# on the >=$10M/day whale universe.
+report:
+  assumed_cost_pct: 0.5
