@@ -356,7 +356,7 @@ class Storage:
             )
             return ScanLog(**{**log.__dict__, "id": cur.lastrowid})
 
-    def get_stats(self, strategy: Optional[str] = None) -> dict:
+    def get_stats(self, strategy: Optional[str] = None, cost_pct: float = 0.0) -> dict:
         """Aggregate win/loss stats. Pass a strategy to scope stats to one strategy."""
         where_pos = "WHERE outcome IS NOT NULL"
         where_open = "WHERE outcome IS NULL"
@@ -387,4 +387,5 @@ class Storage:
                 "open_positions": open_count,
                 "signals_today": signals_today,
                 "avg_pnl_pct": round(avg_pnl, 2) if avg_pnl is not None else 0.0,
+                "net_expectancy_pct": round(avg_pnl - cost_pct, 2) if avg_pnl is not None else 0.0,
             }

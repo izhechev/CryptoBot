@@ -54,3 +54,12 @@ def test_report_excludes_old_trades_and_lists_pending(db):
     assert "No closed trades" in text   # the 30h-old trade is excluded
     assert "Working limits: 1" in text
     assert "SOL@150" in text
+
+
+def test_report_shows_net_expectancy(db):
+    closed_position(db, "AAA", "whale", 3.0, "win")
+    closed_position(db, "BBB", "whale", 1.0, "win")
+    text = build_daily_report(db, cost_pct=0.5)
+    assert "expectancy +2.00% gross" in text
+    assert "+1.50% net" in text
+    assert "total +4.0% gross · +3.0% net" in text
