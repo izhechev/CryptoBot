@@ -31,6 +31,10 @@ paper_trading:
   stop_loss_pct: 4.0
   max_hold_hours: 12
   notional_size: 500.0
+whale:
+  max_open: 4
+report:
+  assumed_cost_pct: 0.7
 """)
     monkeypatch.setenv("CMC_API_KEY", "cmc123")
     monkeypatch.setenv("GEMINI_API_KEY", "gem456")
@@ -48,3 +52,5 @@ paper_trading:
     assert cfg.htf_timeframe == "4h"
     assert cfg.min_volume_24h == 2000000
     assert cfg.divergence_weight == 20
+    assert cfg.whale_max_open == 4
+    assert cfg.assumed_cost_pct == 0.7
