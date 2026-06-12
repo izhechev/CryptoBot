@@ -318,6 +318,16 @@ class Storage:
             ).fetchone()
             return row is not None
 
+    def count_open_positions(self, strategy: Optional[str] = None) -> int:
+        """Number of open positions, optionally scoped to one strategy."""
+        q = "SELECT COUNT(*) FROM positions WHERE outcome IS NULL"
+        params: tuple = ()
+        if strategy is not None:
+            q += " AND strategy=?"
+            params = (strategy,)
+        with self._conn() as conn:
+            return conn.execute(q, params).fetchone()[0]
+
     def save_price_tick(self, tick: PriceTick) -> PriceTick:
         with self._conn() as conn:
             cur = conn.execute(

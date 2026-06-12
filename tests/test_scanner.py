@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 from unittest.mock import AsyncMock, MagicMock, patch
 from backend.scanner import Scanner
-from backend.storage import Storage
+from backend.storage import Storage, Signal, Position
 from backend.cmc_client import CoinListing
 from backend.news import NewsResult, CatalystResult
 from backend.indicators import IndicatorScores
@@ -468,3 +468,24 @@ async def test_whale_skips_tokenized_stocks(scanner, db):
         await scanner.run_once()
     assert not db.has_open_position("CRCLX", strategy="whale")
     assert db.get_pending_orders() == []
+
+
+@pytest.mark.asyncio
+async def test_whale_cap_blocks_new_whale(scanner, db):
+    """At the cap, _open_whale bails before arming a limit or opening a position."""
+    from datetime import datetime, timezone
+    scanner._cfg.whale_max_open = 1
+    sig = db.save_signal(Signal(id=None, coin_symbol="OLD", coin_name="Old",
+                                total_score=90.0, technical_score=80.0, news_score=50.0,
+                                gemini_explanation="x", fired_at=datetime.now(timezone.utc),
+                                strategy="whale"))
+    db.save_position(Position(id=None, signal_id=sig.id, coin_symbol="OLD",
+                              entry_price=1.0, entry_at=datetime.now(timezone.utc),
+                              exit_price=None, exit_at=None, outcome=None,
+                              pnl_pct=None, strategy="whale"))
+    coin = CoinListing(symbol="NEW", name="New Coin", price=1.0,
+                       volume_24h=5e10, change_24h=5.0)
+    opened = await scanner._open_whale(coin, MagicMock(), make_candle_df())
+    assert opened is False
+    assert db.get_pending_orders() == []
+    assert not db.has_open_position("NEW", strategy="whale")

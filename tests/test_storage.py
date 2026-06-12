@@ -132,3 +132,12 @@ def test_stats_net_expectancy_subtracts_cost(db):
     stats = db.get_stats(cost_pct=0.5)
     assert stats["net_expectancy_pct"] == pytest.approx(2.0)
     assert stats["avg_pnl_pct"] == pytest.approx(2.5)  # gross stays
+
+
+def test_count_open_positions_by_strategy(db):
+    _open_pos(db, symbol="AAA")          # standard (default)
+    p = _open_pos(db, symbol="BBB")
+    db.close_position(position_id=p.id, exit_price=1.0,
+                      exit_at=datetime.now(timezone.utc), outcome="win", pnl_pct=0.0)
+    assert db.count_open_positions() == 1
+    assert db.count_open_positions("whale") == 0

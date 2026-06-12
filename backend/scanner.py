@@ -310,6 +310,13 @@ class Scanner:
         # already require the coin itself to be in an uptrend. Still respect the cap.
         if not self._can_open(respect_regime=not self._cfg.whale_bypass_regime):
             return False
+        # Correlated-exposure cap: concurrent whale longs are one market-beta bet
+        # overnight (12 open -> one dip = six stop-outs). Skips are logged so the
+        # cap's cost in missed winners is countable later.
+        if self._db.count_open_positions("whale") >= self._cfg.whale_max_open:
+            logger.info("Whale cap %d reached — %s skipped",
+                        self._cfg.whale_max_open, coin.symbol)
+            return False
         # Liquidity floor: whales measured net NEGATIVE on thin coins (slippage >
         # edge) and net positive on liquid ones — only ride coins this liquid.
         if coin.volume_24h < self._cfg.whale_min_coin_volume_24h:

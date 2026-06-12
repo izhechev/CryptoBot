@@ -279,3 +279,16 @@ async def test_scale_out_runner_breakeven_floor(tracker, db):
     closed = db.get_all_positions()[0]
     assert closed.outcome == "win"
     assert closed.pnl_pct == pytest.approx(0.5 * 5.0 + 0.5 * (-4.0), abs=0.1)  # +0.5%
+
+
+@pytest.mark.asyncio
+async def test_retest_fill_cancelled_at_whale_cap(tracker, db):
+    """A working limit that fills while the whale book is full is cancelled, not
+    opened — the cap holds at both entry paths."""
+    tracker._cfg.whale_max_open = 1
+    make_open_position(db, "AAA", 1.0, strategy="whale")  # book is full
+    make_pending(db, "RTS", limit=1.00)
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"AAA": 1.0, "RTS": 0.99})
+    await tracker.run_once()
+    assert not db.has_open_position("RTS", strategy="whale")
+    assert db.get_pending_orders() == []  # cancelled, not left working
