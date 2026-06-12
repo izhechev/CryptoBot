@@ -123,3 +123,12 @@ def test_last_tick_price_returns_latest(db):
 def test_last_tick_price_none_without_ticks(db):
     pos = _open_pos(db)
     assert db.last_tick_price(pos.id) is None
+
+
+def test_stats_net_expectancy_subtracts_cost(db):
+    pos = _open_pos(db, symbol="NET", entry=100.0)
+    db.close_position(position_id=pos.id, exit_price=102.5,
+                      exit_at=datetime.now(timezone.utc), outcome="win", pnl_pct=2.5)
+    stats = db.get_stats(cost_pct=0.5)
+    assert stats["net_expectancy_pct"] == pytest.approx(2.0)
+    assert stats["avg_pnl_pct"] == pytest.approx(2.5)  # gross stays

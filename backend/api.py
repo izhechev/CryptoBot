@@ -72,9 +72,9 @@ def create_app(db: Storage, cfg: Config) -> FastAPI:
     @app.get("/stats")
     def get_stats():
         return {
-            "overall": db.get_stats(),
-            "standard": db.get_stats(strategy="standard"),
-            "whale": db.get_stats(strategy="whale"),
+            "overall": db.get_stats(cost_pct=cfg.assumed_cost_pct),
+            "standard": db.get_stats(strategy="standard", cost_pct=cfg.assumed_cost_pct),
+            "whale": db.get_stats(strategy="whale", cost_pct=cfg.assumed_cost_pct),
         }
 
     @app.get("/config")

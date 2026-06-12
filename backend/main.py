@@ -43,7 +43,7 @@ async def main() -> None:
         scanner.loop(),
         scanner.whale_loop(),
         tracker.loop(),
-        daily_report_loop(db, notifier),
+        daily_report_loop(db, notifier, cost_pct=cfg.assumed_cost_pct),
         server.serve(),
     )
 

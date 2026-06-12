@@ -15,13 +15,14 @@ from backend.storage import Storage
 logger = logging.getLogger(__name__)
 
 
-def _strategy_block(name: str, rows: list) -> str:
+def _strategy_block(name: str, rows: list, cost_pct: float) -> str:
     if not rows:
         return f"<b>{name}</b>: no closed trades\n"
     wins = [t for t in rows if t.outcome == "win"]
     losses = [t for t in rows if t.outcome == "loss"]
     tos = [t for t in rows if t.outcome == "timeout"]
     pnls = [t.pnl_pct or 0.0 for t in rows]
+    net = [p - cost_pct for p in pnls]
     gains = sum(p for p in pnls if p > 0)
     pains = -sum(p for p in pnls if p < 0)
     pf = f"{gains / pains:.2f}" if pains > 0 else "∞"
@@ -31,7 +32,10 @@ def _strategy_block(name: str, rows: list) -> str:
         out += f"  avg win +{statistics.mean(t.pnl_pct for t in wins):.2f}%"
     if losses:
         out += f"  avg loss {statistics.mean(t.pnl_pct for t in losses):.2f}%"
-    out += f"\n  expectancy {statistics.mean(pnls):+.2f}%/trade · profit factor {pf} · total {sum(pnls):+.1f}%\n"
+    out += (f"\n  expectancy {statistics.mean(pnls):+.2f}% gross · "
+            f"{statistics.mean(net):+.2f}% net (cost {cost_pct:.1f}%/trade) · "
+            f"profit factor {pf}\n"
+            f"  total {sum(pnls):+.1f}% gross · {sum(net):+.1f}% net\n")
     best = max(rows, key=lambda t: t.pnl_pct or 0)
     worst = min(rows, key=lambda t: t.pnl_pct or 0)
     out += (f"  best {best.coin_symbol} {best.pnl_pct:+.1f}% · "
@@ -39,7 +43,7 @@ def _strategy_block(name: str, rows: list) -> str:
     return out
 
 
-def build_daily_report(db: Storage, hours: float = 24.0) -> str:
+def build_daily_report(db: Storage, hours: float = 24.0, cost_pct: float = 0.5) -> str:
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     closed = db.get_closed_since(cutoff)
     open_pos = db.get_open_positions()
@@ -49,9 +53,9 @@ def build_daily_report(db: Storage, hours: float = 24.0) -> str:
     if not closed:
         text += "No closed trades this period.\n"
     else:
-        text += _strategy_block("🐋 Whale", [t for t in closed if t.strategy == "whale"])
+        text += _strategy_block("🐋 Whale", [t for t in closed if t.strategy == "whale"], cost_pct)
         text += "\n"
-        text += _strategy_block("📈 Spot", [t for t in closed if t.strategy != "whale"])
+        text += _strategy_block("📈 Spot", [t for t in closed if t.strategy != "whale"], cost_pct)
     text += f"\nOpen: {len(open_pos)} position(s)"
     if open_pos:
         text += " — " + ", ".join(
@@ -63,12 +67,13 @@ def build_daily_report(db: Storage, hours: float = 24.0) -> str:
     return text
 
 
-async def daily_report_loop(db: Storage, notifier, hours: float = 24.0) -> None:
+async def daily_report_loop(db: Storage, notifier, hours: float = 24.0,
+                            cost_pct: float = 0.5) -> None:
     """Send the digest every `hours`, starting one period after boot."""
     while True:
         await asyncio.sleep(hours * 3600)
         try:
-            text = build_daily_report(db, hours)
+            text = build_daily_report(db, hours, cost_pct=cost_pct)
             logger.info("Daily report:\n%s", text.replace("<b>", "").replace("</b>", ""))
             await notifier.send_daily_report(text)
         except Exception as e:
