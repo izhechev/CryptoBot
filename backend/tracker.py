@@ -100,6 +100,12 @@ class Tracker:
                 price = prices.get(po.coin_symbol)
                 if price is None or price > po.limit_price:
                     continue
+                if self._db.count_open_positions("whale") >= self._cfg.whale_max_open:
+                    # The book filled up while the limit was working — cancel, don't open.
+                    self._db.delete_pending_order(po.id)
+                    logger.info("Whale cap %d reached — retest fill for %s cancelled",
+                                self._cfg.whale_max_open, po.coin_symbol)
+                    continue
                 # Filled: price pulled back to (or below) the limit.
                 self._db.delete_pending_order(po.id)
                 event = self._signals.emit_whale(
