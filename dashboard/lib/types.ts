@@ -50,6 +50,7 @@ export interface Stats {
   overall: StrategyStats;
   standard: StrategyStats;
   whale: StrategyStats;
+  next_scan_in: number | null;  // seconds until the next full scan (backend clock)
 }
 
 export interface BotConfig {

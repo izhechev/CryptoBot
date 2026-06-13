@@ -17,6 +17,7 @@ from backend.whale_strategy import detect_whale
 from backend.notify import Notifier
 from backend.format_utils import fmt_price
 from backend.gecko import GeckoClient
+from backend.scan_clock import SCAN_CLOCK
 
 logger = logging.getLogger(__name__)
 _THROTTLE_DELAY = 0.1  # seconds between coins, to respect exchange rate limits
@@ -437,6 +438,9 @@ class Scanner:
         interval = self._cfg.scan_interval_minutes * 60
         while True:
             start = time.monotonic()
+            # The loop paces by scan START, so the next scan is due one interval
+            # from now — publish that so the dashboard countdown tracks reality.
+            SCAN_CLOCK.set_next(start + interval)
             try:
                 await self.run_once()
             except Exception as e:
