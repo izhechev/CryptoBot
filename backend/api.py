@@ -4,6 +4,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from backend.config import Config
 from backend.storage import Storage
+from backend.scan_clock import SCAN_CLOCK
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +72,12 @@ def create_app(db: Storage, cfg: Config) -> FastAPI:
 
     @app.get("/stats")
     def get_stats():
+        rem = SCAN_CLOCK.seconds_remaining()
         return {
             "overall": db.get_stats(cost_pct=cfg.assumed_cost_pct),
             "standard": db.get_stats(strategy="standard", cost_pct=cfg.assumed_cost_pct),
             "whale": db.get_stats(strategy="whale", cost_pct=cfg.assumed_cost_pct),
+            "next_scan_in": round(rem) if rem is not None else None,
         }
 
     @app.get("/config")

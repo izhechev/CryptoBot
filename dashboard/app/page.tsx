@@ -11,7 +11,7 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const WS = API.replace(/^http/, "ws") + "/ws";
 
 const EMPTY_STRAT = { total_closed: 0, wins: 0, losses: 0, win_rate: 0, open_positions: 0, signals_today: 0, avg_pnl_pct: 0 };
-const EMPTY_STATS: Stats = { overall: EMPTY_STRAT, standard: EMPTY_STRAT, whale: EMPTY_STRAT };
+const EMPTY_STATS: Stats = { overall: EMPTY_STRAT, standard: EMPTY_STRAT, whale: EMPTY_STRAT, next_scan_in: null };
 
 export default function Dashboard() {
   const [positions, setPositions] = useState<Position[]>([]);
@@ -34,6 +34,8 @@ export default function Dashboard() {
       ]);
       setPositions(p); setPending(pend); setStats(st); setConfig(cfg);
       scanInterval.current = cfg.scan_interval_minutes * 60;
+      // Anchor the countdown to the backend's clock (re-syncs every poll + on reload).
+      if (typeof st.next_scan_in === "number") setNextScanIn(st.next_scan_in);
     } catch {
       /* backend not up yet — retry on next tick */
     }
@@ -58,8 +60,7 @@ export default function Dashboard() {
     const latest = messages[0];
     if (!latest) return;
     if (latest.type === "signal_fired") {
-      refresh();
-      setNextScanIn(scanInterval.current);
+      refresh();  // re-anchors nextScanIn from the backend clock
     } else if (latest.type === "position_closed") {
       refresh();
     } else if (latest.type === "position_updated") {
