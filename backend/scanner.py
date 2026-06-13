@@ -422,6 +422,10 @@ class Scanner:
         """The whale fast lane, alongside the hourly full scan."""
         await self.init()
         while True:
+            # Publish when this lane next scans (after the sleep) so the dashboard
+            # countdown reflects the 15-min whale cadence, not just the hourly scan.
+            SCAN_CLOCK.set_next("whale", time.monotonic()
+                                + self._cfg.whale_scan_interval_minutes * 60)
             await asyncio.sleep(self._cfg.whale_scan_interval_minutes * 60)
             if not self._liquid_coins:
                 continue  # first full scan hasn't populated the universe yet
@@ -440,7 +444,7 @@ class Scanner:
             start = time.monotonic()
             # The loop paces by scan START, so the next scan is due one interval
             # from now — publish that so the dashboard countdown tracks reality.
-            SCAN_CLOCK.set_next(start + interval)
+            SCAN_CLOCK.set_next("full", start + interval)
             try:
                 await self.run_once()
             except Exception as e:
