@@ -20,7 +20,6 @@ export default function Dashboard() {
   const [config, setConfig] = useState<BotConfig | null>(null);
   const [live, setLive] = useState<LiveUpdate>({});
   const [nextScanIn, setNextScanIn] = useState(0);
-  const scanInterval = useRef(30 * 60);
 
   const { messages, connected } = useCryptoBotWs(WS);
 
@@ -33,7 +32,6 @@ export default function Dashboard() {
         fetch(`${API}/config`).then((r) => r.json()),
       ]);
       setPositions(p); setPending(pend); setStats(st); setConfig(cfg);
-      scanInterval.current = cfg.scan_interval_minutes * 60;
       // Anchor the countdown to the backend's clock (re-syncs every poll + on reload).
       if (typeof st.next_scan_in === "number") setNextScanIn(st.next_scan_in);
     } catch {
@@ -49,9 +47,10 @@ export default function Dashboard() {
     return () => clearInterval(t);
   }, [refresh]);
 
+  // Tick down between polls; floor at 0 (a scan is due) and let refresh re-anchor.
   useEffect(() => {
     const t = setInterval(() => {
-      setNextScanIn((prev) => (prev <= 1 ? scanInterval.current : prev - 1));
+      setNextScanIn((prev) => (prev <= 0 ? 0 : prev - 1));
     }, 1000);
     return () => clearInterval(t);
   }, []);
