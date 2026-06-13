@@ -76,9 +76,12 @@ paper_trading:
 # e.g. a coin that touches +10% for only a minute still books the win.
 tracking:
   # The tracker prices positions from CoinGecko (trusted/displayed price) and checks
-  # TP/SL/timeout each cycle. One batched CoinGecko call per cycle — keep >=2s to
-  # stay under CoinGecko's free-tier rate limit (raise if you see 429 warnings).
-  price_feed_seconds: 3
+  # TP/SL/timeout each cycle. ONE CoinGecko call per cycle while any position is open
+  # — this is the dominant credit consumer. Budget math (demo plan ~10k credits/mo):
+  #   3s = 20 calls/min ≈ 28.8k/day  ·  30s = 2 calls/min ≈ 2.9k/day  ·  60s = 1.4k/day.
+  # 30s is plenty for a strategy that holds for hours with ATR stops + a 2–6% trail;
+  # only sub-30s wicks are missed. Raise further if you run 24/7 and credits run low.
+  price_feed_seconds: 30
   candle_timeframe: "1m"        # timeframe whose high/low is scanned for TP/SL touches
   candle_limit: 60
 
