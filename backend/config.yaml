@@ -77,11 +77,12 @@ paper_trading:
 tracking:
   # The tracker prices positions from CoinGecko (trusted/displayed price) and checks
   # TP/SL/timeout each cycle. ONE CoinGecko call per cycle while any position is open
-  # — the dominant credit consumer. Budget math (demo plan ~10k credits/mo, 24/7):
-  #   3s ≈ 28.8k/day · 30s ≈ 2.9k/day · 120s ≈ 720/day · 300s ≈ 290/day · 600s ≈ 145/day.
-  # 120s is fine for a strategy that holds for hours with ATR stops + a 2–6% trail.
-  # If you run 24/7 to the monthly reset, go to ~600s so credits don't run out.
-  price_feed_seconds: 120
+  # — the dominant credit consumer. Budget math (24/7, positions open):
+  #   120s ≈ 720/day · 300s ≈ 290/day · 600s ≈ 145/day · 900s ≈ 96/day.
+  # Sized for 2,274 credits left over 17 days to the Jul-1 reset (~100/day for the
+  # feed after reserving ~35/day for the scanner): 900s reaches the reset with margin.
+  # Fine for a strategy that holds for hours with ATR stops + a 2–6% trail.
+  price_feed_seconds: 900
   candle_timeframe: "1m"        # timeframe whose high/low is scanned for TP/SL touches
   candle_limit: 60
 
