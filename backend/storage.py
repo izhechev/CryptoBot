@@ -367,7 +367,10 @@ class Storage:
             return ScanLog(**{**log.__dict__, "id": cur.lastrowid})
 
     def get_stats(self, strategy: Optional[str] = None, cost_pct: float = 0.0) -> dict:
-        """Aggregate win/loss stats. Pass a strategy to scope stats to one strategy."""
+        """Aggregate win/loss stats. A "win" = a trade that made money (pnl > 0),
+        not merely one tagged outcome='win' — a timeout can close green (armed and
+        rode to max-hold still up), and counting it as a loss understated the rate.
+        Pass a strategy to scope stats to one strategy."""
         where_pos = "WHERE outcome IS NOT NULL"
         where_open = "WHERE outcome IS NULL"
         where_sig = "WHERE date(fired_at) = date('now')"
@@ -380,11 +383,8 @@ class Storage:
 
         with self._conn() as conn:
             total = conn.execute(f"SELECT COUNT(*) FROM positions {where_pos}", params).fetchone()[0]
-            win_params = (("win",) + params) if strategy is None else ("win", strategy)
             wins = conn.execute(
-                "SELECT COUNT(*) FROM positions WHERE outcome=?"
-                + (" AND strategy=?" if strategy is not None else ""),
-                win_params,
+                f"SELECT COUNT(*) FROM positions {where_pos} AND pnl_pct > 0", params
             ).fetchone()[0]
             open_count = conn.execute(f"SELECT COUNT(*) FROM positions {where_open}", params).fetchone()[0]
             signals_today = conn.execute(f"SELECT COUNT(*) FROM signals {where_sig}", params).fetchone()[0]

@@ -21,13 +21,16 @@ def _strategy_block(name: str, rows: list, cost_pct: float) -> str:
     wins = [t for t in rows if t.outcome == "win"]
     losses = [t for t in rows if t.outcome == "loss"]
     tos = [t for t in rows if t.outcome == "timeout"]
+    green = [t for t in rows if (t.pnl_pct or 0) > 0]  # made money, incl. green timeouts
     pnls = [t.pnl_pct or 0.0 for t in rows]
     net = [p - cost_pct for p in pnls]
     gains = sum(p for p in pnls if p > 0)
     pains = -sum(p for p in pnls if p < 0)
     pf = f"{gains / pains:.2f}" if pains > 0 else "∞"
+    # W/L/T = how trades closed; the headline % = how many actually made money
+    # (a timeout can be green, so profitable% >= the bare win count).
     out = (f"<b>{name}</b>: {len(rows)} closed — {len(wins)}W/{len(losses)}L/{len(tos)}T "
-           f"({len(wins) / len(rows) * 100:.0f}%)\n")
+           f"({len(green) / len(rows) * 100:.0f}% profitable)\n")
     if wins:
         out += f"  avg win +{statistics.mean(t.pnl_pct for t in wins):.2f}%"
     if losses:
