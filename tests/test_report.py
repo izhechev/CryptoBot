@@ -63,3 +63,11 @@ def test_report_shows_net_expectancy(db):
     assert "expectancy +2.00% gross" in text
     assert "+1.50% net" in text
     assert "total +4.0% gross · +3.0% net" in text
+
+
+def test_report_counts_profitable_timeout_as_win(db):
+    closed_position(db, "ZEC", "whale", 8.0, "timeout")
+    closed_position(db, "AR", "whale", -2.0, "timeout")
+    text = build_daily_report(db)
+    assert "0W/0L/2T" in text          # both closed via the timeout path
+    assert "50% profitable" in text    # but one made money

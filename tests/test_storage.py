@@ -141,3 +141,17 @@ def test_count_open_positions_by_strategy(db):
                       exit_at=datetime.now(timezone.utc), outcome="win", pnl_pct=0.0)
     assert db.count_open_positions() == 1
     assert db.count_open_positions("whale") == 0
+
+
+def test_stats_counts_profitable_timeout_as_win(db):
+    p1 = _open_pos(db, symbol="ZEC", entry=100.0)
+    db.close_position(position_id=p1.id, exit_price=108.0,
+                      exit_at=datetime.now(timezone.utc), outcome="timeout", pnl_pct=8.0)
+    p2 = _open_pos(db, symbol="AR", entry=100.0)
+    db.close_position(position_id=p2.id, exit_price=98.0,
+                      exit_at=datetime.now(timezone.utc), outcome="timeout", pnl_pct=-2.0)
+    stats = db.get_stats()
+    assert stats["total_closed"] == 2
+    assert stats["wins"] == 1          # the +8% timeout made money -> counts as a win
+    assert stats["losses"] == 1        # the -2% timeout is the only non-profitable one
+    assert stats["win_rate"] == 50.0
