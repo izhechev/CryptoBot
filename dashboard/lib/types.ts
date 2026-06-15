@@ -23,6 +23,7 @@ export interface Position {
   pnl_pct: number | null;
   strategy: string;
   scale_price: number | null;  // half banked at this price (scale-out)
+  current_price?: number | null;  // last recorded tick price (open positions)
 }
 
 export interface PendingOrder {

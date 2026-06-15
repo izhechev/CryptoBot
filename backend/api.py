@@ -58,7 +58,20 @@ def create_app(db: Storage, cfg: Config) -> FastAPI:
 
     @app.get("/positions")
     def get_positions(limit: int = 100):
-        return [_serialize(p) for p in db.get_all_positions(limit=limit)]
+        # Attach each OPEN position's last recorded tick price (+ live pnl) so the
+        # dashboard shows the real price on load instead of entry/+0.00% — the WS
+        # price stream now only broadcasts every price_feed_seconds (slow, to save
+        # CoinGecko credits), so it can't be the only source of the current price.
+        out = []
+        for p in db.get_all_positions(limit=limit):
+            d = _serialize(p)
+            if p.outcome is None:
+                last = db.last_tick_price(p.id)
+                if last is not None:
+                    d["current_price"] = last
+                    d["pnl_pct"] = round((last - p.entry_price) / p.entry_price * 100, 4)
+            out.append(d)
+        return out
 
     @app.get("/pending")
     def get_pending():
