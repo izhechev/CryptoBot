@@ -17,9 +17,11 @@ function fmtPrice(p: number) {
 export function PositionCard({ position, live }: { position: Position; live: LiveUpdate }) {
   const whale = position.strategy === "whale";
   const accent = whale ? "var(--amber)" : "var(--green)";
+  // Prefer the live WS tick; fall back to the last-known price from /positions
+  // (the WS stream is slow now), and only then to entry price.
   const u = live[position.id];
-  const pnl = u?.pnl_pct ?? 0;
-  const current = u?.current_price ?? position.entry_price;
+  const pnl = u?.pnl_pct ?? position.pnl_pct ?? 0;
+  const current = u?.current_price ?? position.current_price ?? position.entry_price;
   const up = pnl >= 0;
   const pnlColor = up ? "var(--green)" : "var(--red)";
 

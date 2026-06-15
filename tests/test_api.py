@@ -99,3 +99,24 @@ async def test_get_pending_orders(app, db):
     assert len(data) == 1
     assert data[0]["coin_symbol"] == "SOL"
     assert data[0]["limit_price"] == 150.0
+
+
+@pytest.mark.asyncio
+async def test_open_position_attaches_last_known_price(app, db):
+    """An open position should carry its last tick price + live pnl so the dashboard
+    shows the real price on load, not entry/+0.00% while it waits for a WS tick."""
+    from backend.storage import PriceTick
+    sig = db.save_signal(Signal(id=None, coin_symbol="ZEC", coin_name="Zcash",
+                                total_score=90.0, technical_score=80.0, news_score=50.0,
+                                gemini_explanation="x", fired_at=datetime.now(timezone.utc),
+                                strategy="whale"))
+    pos = db.save_position(Position(id=None, signal_id=sig.id, coin_symbol="ZEC",
+                                    entry_price=528.45, entry_at=datetime.now(timezone.utc),
+                                    exit_price=None, exit_at=None, outcome=None,
+                                    pnl_pct=None, strategy="whale"))
+    db.save_price_tick(PriceTick(id=None, position_id=pos.id, price=525.46,
+                                 checked_at=datetime.now(timezone.utc)))
+    resp = await _get(app, "/positions")
+    row = next(r for r in resp.json() if r["coin_symbol"] == "ZEC")
+    assert row["current_price"] == pytest.approx(525.46)
+    assert row["pnl_pct"] == pytest.approx(-0.566, abs=0.01)
