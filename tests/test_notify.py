@@ -55,6 +55,35 @@ async def test_send_position_closed_win(notifier):
 
 
 @pytest.mark.asyncio
+async def test_green_timeout_shows_win_emoji(notifier):
+    """A timeout that closed in profit (armed, rode to max-hold still up) is money
+    made — it must NOT show the loss ❌."""
+    pos = Position(
+        id=2, signal_id=2, coin_symbol="ZEC", entry_price=453.96,
+        entry_at=datetime.now(timezone.utc), exit_price=492.23,
+        exit_at=datetime.now(timezone.utc), outcome="timeout", pnl_pct=8.43,
+        strategy="whale",
+    )
+    await notifier.send_position_closed(pos)
+    text = notifier._bot.send_message.call_args[1]["text"]
+    assert "✅" in text and "❌" not in text
+    assert "TIMEOUT" in text  # still labeled as a timeout
+
+
+@pytest.mark.asyncio
+async def test_red_timeout_shows_loss_emoji(notifier):
+    pos = Position(
+        id=3, signal_id=3, coin_symbol="AR", entry_price=1.93,
+        entry_at=datetime.now(timezone.utc), exit_price=1.88,
+        exit_at=datetime.now(timezone.utc), outcome="timeout", pnl_pct=-2.59,
+        strategy="whale",
+    )
+    await notifier.send_position_closed(pos)
+    text = notifier._bot.send_message.call_args[1]["text"]
+    assert "❌" in text
+
+
+@pytest.mark.asyncio
 async def test_no_crash_when_telegram_fails(notifier):
     notifier._bot.send_message = AsyncMock(side_effect=Exception("network error"))
     event = SignalEvent("ETH", "Ethereum", 82.0, 75.0, 88.0, "Good.", signal_id=3)
