@@ -30,7 +30,7 @@ def test_report_contains_per_strategy_metrics(db):
     closed_position(db, "CCC", "standard", 2.5, "win")
     text = build_daily_report(db)
     assert "Whale" in text and "Spot" in text
-    assert "1W/1L/0T" in text          # whale tally
+    assert "1W/1L" in text             # whale tally (by money made)
     assert "profit factor" in text
     assert "expectancy" in text
     assert "best AAA +4.0%" in text
@@ -69,5 +69,6 @@ def test_report_counts_profitable_timeout_as_win(db):
     closed_position(db, "ZEC", "whale", 8.0, "timeout")
     closed_position(db, "AR", "whale", -2.0, "timeout")
     text = build_daily_report(db)
-    assert "0W/0L/2T" in text          # both closed via the timeout path
-    assert "50% profitable" in text    # but one made money
+    assert "1W/1L" in text             # green timeout = win, red timeout = loss
+    assert "(50%)" in text
+    assert "2 timed out" in text       # both still reported as timeouts (how they closed)
