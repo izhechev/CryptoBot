@@ -69,7 +69,10 @@ class Notifier:
         )
 
     async def send_position_closed(self, pos: Position) -> None:
-        emoji = "✅" if pos.outcome == "win" else "❌"
+        # Colour by actual P&L, not the outcome label: a timeout can close green
+        # (armed, rode to max-hold still up) or red. The label already says WIN/LOSS/
+        # TIMEOUT — the emoji should reflect money made vs lost.
+        emoji = "✅" if (pos.pnl_pct or 0) >= 0 else "❌"
         tag = "🐋 " if pos.strategy == "whale" else ""
         outcome_label = pos.outcome.upper() if pos.outcome else "CLOSED"
         text = (
