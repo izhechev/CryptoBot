@@ -18,23 +18,22 @@ logger = logging.getLogger(__name__)
 def _strategy_block(name: str, rows: list, cost_pct: float) -> str:
     if not rows:
         return f"<b>{name}</b>: no closed trades\n"
-    wins = [t for t in rows if t.outcome == "win"]
-    losses = [t for t in rows if t.outcome == "loss"]
-    tos = [t for t in rows if t.outcome == "timeout"]
-    green = [t for t in rows if (t.pnl_pct or 0) > 0]  # made money, incl. green timeouts
+    # Win/loss by MONEY MADE, not exit mechanism: a positive timeout is a win.
+    winners = [t for t in rows if (t.pnl_pct or 0) > 0]
+    losers = [t for t in rows if (t.pnl_pct or 0) <= 0]
+    tos = [t for t in rows if t.outcome == "timeout"]  # reported separately (how they closed)
     pnls = [t.pnl_pct or 0.0 for t in rows]
     net = [p - cost_pct for p in pnls]
     gains = sum(p for p in pnls if p > 0)
     pains = -sum(p for p in pnls if p < 0)
     pf = f"{gains / pains:.2f}" if pains > 0 else "∞"
-    # W/L/T = how trades closed; the headline % = how many actually made money
-    # (a timeout can be green, so profitable% >= the bare win count).
-    out = (f"<b>{name}</b>: {len(rows)} closed — {len(wins)}W/{len(losses)}L/{len(tos)}T "
-           f"({len(green) / len(rows) * 100:.0f}% profitable)\n")
-    if wins:
-        out += f"  avg win +{statistics.mean(t.pnl_pct for t in wins):.2f}%"
-    if losses:
-        out += f"  avg loss {statistics.mean(t.pnl_pct for t in losses):.2f}%"
+    out = (f"<b>{name}</b>: {len(rows)} closed — {len(winners)}W/{len(losers)}L "
+           f"({len(winners) / len(rows) * 100:.0f}%)"
+           + (f" · {len(tos)} timed out\n" if tos else "\n"))
+    if winners:
+        out += f"  avg win +{statistics.mean(t.pnl_pct for t in winners):.2f}%"
+    if losers:
+        out += f"  avg loss {statistics.mean(t.pnl_pct for t in losers):.2f}%"
     out += (f"\n  expectancy {statistics.mean(pnls):+.2f}% gross · "
             f"{statistics.mean(net):+.2f}% net (cost {cost_pct:.1f}%/trade) · "
             f"profit factor {pf}\n"
