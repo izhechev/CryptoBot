@@ -19,9 +19,11 @@ beats the current exits out-of-sample. If it doesn't win OOS, nothing changes.
 
 - **Signal:** EMA ride. The runner stays open while the 15m candle closes at or
   above EMA-N; it exits on the first candle that closes below EMA-N.
-- **Structure:** keep scale-out — bank half at the first decaying-ROI target —
-  then the runner half rides the EMA instead of the 2% trailing give-back. The
-  ATR stop-loss remains as a hard disaster floor; max-hold timeout still applies.
+- **Structure:** the EMA replaces the 2% trailing give-back as the upside exit.
+  Scale-out is a **tested toggle**, not fixed: with it ON, bank half at the first
+  decaying-ROI target then the runner rides the EMA; with it OFF, the full
+  position rides the EMA (PORTAL's +39% came from a full ride). The ATR stop-loss
+  remains a hard disaster floor; max-hold timeout still applies.
 - **Fast-mover fix (in this mode only):** bank half even if the trade armed
   before it scaled (a fast mover that jumps past the arm threshold between checks
   currently locks nothing). So in `ema_ride`, every trade that reaches the first
@@ -43,18 +45,25 @@ phase modifies only `simulate_exit`, behind a new config flag.
 
 ### `ema_ride` exit logic (in `simulate_exit`)
 
-Identical to `roi` up to the first profit target:
+The EMA close-below replaces the 2% trailing give-back as the upside exit. The
+ATR stop (candle low) and max-hold timeout are always active. The two scale-out
+settings:
+
+**Scale-out ON** (bank half + ride):
 1. Decaying-ROI target reached → **bank half** (set `scale_price`), even if the
    trade is already armed (peak past `trail_arm_pct`). This is the fast-mover fix.
-2. After scaling, the runner exits when a candle **closes below EMA-N** (computed
-   over closes up to and including the current candle — no lookahead). Blended
-   P&L = banked half + runner half, as today.
-3. ATR stop-loss on the candle low is always active (disaster floor).
-4. Max-hold timeout at the close still applies.
-5. A trade that never reaches the first profit target behaves as today (rides to
-   stop or timeout) — no EMA ride without a scale.
+2. After scaling, the runner exits on the first candle that **closes below EMA-N**.
+   Blended P&L = banked half + runner half, as today.
+3. A trade that never reaches the first target behaves as today (stop/timeout).
 
-`roi` mode is byte-for-byte the current logic (the clean baseline).
+**Scale-out OFF** (full ride):
+1. No banking. Once the trade is in profit past the first decaying-ROI target
+   (so we only ride confirmed movers, not chop), the **full position** rides the
+   EMA and exits on the first candle that closes below EMA-N.
+2. Below that first target, behaves as today (stop/timeout).
+
+EMA-N is computed over closes up to and including the current candle (no
+lookahead). `roi` mode is byte-for-byte the current logic (the clean baseline).
 
 ### EMA computation
 
@@ -66,10 +75,17 @@ riding" until the EMA is defined.
 ## Sweep + adoption
 
 A new comparison in `backtest.py` (e.g. `--sweep whale-exit-mode`): run `roi` vs
-`ema_ride` at `ema_ride_length` ∈ {9, 21} over the liquid universe
-(`--min-volume 10000000`), with `--holdout-days`. Report per config: trades,
-win rate, avg win, **max win** (does the fat tail appear?), net expectancy, and
-the out-of-sample numbers.
+`ema_ride` at `ema_ride_length` ∈ {9, 21}, **each with scale-out on and off**,
+over the liquid universe (`--min-volume 10000000`), with `--holdout-days`.
+
+The scale-out toggle is the key structural test, motivated by a live example:
+PORTAL booked **+39.14%** by riding the full position. Had it banked half early
+(~+3%) the blend would have been ~+20%. So `ema_ride` + scale-out **off** (ride
+the whole position) may beat scale-out **on** (bank half, ride the rest) for the
+fat tail — but one runner is not proof; the sweep settles it out-of-sample.
+
+Report per config: trades, win rate, avg win, **max win** (does the fat tail
+appear?), net expectancy, and the out-of-sample numbers.
 
 **Adoption rule:** enable `ema_ride` live only if it beats `roi` on net
 expectancy on the **holdout** (out-of-sample), not just in-sample. Otherwise the
@@ -88,8 +104,10 @@ branch so live and sim stay in sync. Not built in this phase.
 `tests/test_backtest.py`, `ema_ride` mode:
 - Runner stays open while closes hold above the EMA.
 - Runner exits on the first close below the EMA (books blended win/loss).
-- A fast mover that arms before scaling still banks half (fast-mover fix).
-- ATR stop still fires on a crash through the stop level.
+- Scale-out ON: a fast mover that arms before scaling still banks half (fast-mover fix).
+- Scale-out OFF: the full position rides the EMA (no scale_price set) and books
+  the un-blended P&L on the close-below.
+- ATR stop still fires on a crash through the stop level (both scale settings).
 - Max-hold timeout still applies.
 - Regression: `roi` mode output is unchanged vs current behavior.
 
