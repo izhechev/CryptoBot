@@ -130,6 +130,12 @@ class Config:
     # Flat assumed round-trip cost (fees + slippage) subtracted for HONEST net
     # reporting — matches the backtest's average measured cost on >=$10M/day coins.
     assumed_cost_pct: float = 0.5
+    # Whale runner exit shape (BACKTEST EXPERIMENT): "roi" = current decaying-ROI
+    # floor + 2% trailing give-back; "ema_ride" = the runner rides EMA-N and exits
+    # on the first close below it. Default "roi" until a sweep proves ema_ride beats
+    # it out-of-sample. Read by backtest.simulate_exit only (live unchanged).
+    whale_exit_mode: str = "roi"
+    ema_ride_length: int = 9   # EMA period (in 15m candles) the runner rides
 
 
 def _parse_roi(raw: dict | None, default_pct: float) -> list:
@@ -199,6 +205,8 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         bear_signal_threshold=float(scoring.get("bear_signal_threshold", 80.0)),
         spot_enabled=bool(scoring.get("spot_enabled", True)),
         atr_period=int(exits.get("atr_period", 14)),
+        whale_exit_mode=str(exits.get("whale_exit_mode", "roi")),
+        ema_ride_length=int(exits.get("ema_ride_length", 9)),
         atr_stop_multiplier=float(exits.get("atr_stop_multiplier", 2.0)),
         stop_pct_min=float(exits.get("stop_pct_min", 4.0)),
         stop_pct_max=float(exits.get("stop_pct_max", 10.0)),

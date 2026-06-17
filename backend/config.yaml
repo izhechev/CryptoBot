@@ -40,6 +40,10 @@ scoring:
 # chandelier-style exits beat fixed ones by 26-48% profit factor in backtests.
 exits:
   atr_period: 14
+  # Whale runner exit shape (experiment): "roi" (current) or "ema_ride".
+  # Backtest-only until a sweep proves ema_ride beats roi out-of-sample.
+  whale_exit_mode: roi
+  ema_ride_length: 9
   atr_stop_multiplier: 2.5      # stop distance = 2.5 x ATR% (sweep: 2.5 beat 1.5 in every
                                 # spot row; whales were indifferent across 1.5-2.5)
   stop_pct_min: 4.0

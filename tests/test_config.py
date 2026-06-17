@@ -54,3 +54,5 @@ report:
     assert cfg.divergence_weight == 20
     assert cfg.whale_max_open == 4
     assert cfg.assumed_cost_pct == 0.7
+    assert cfg.whale_exit_mode == "roi"      # default
+    assert cfg.ema_ride_length == 9          # default
