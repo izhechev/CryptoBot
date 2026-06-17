@@ -329,3 +329,25 @@ def test_ema_ride_times_out_if_never_targets(cfg):
     idx, price, outcome = simulate_exit(c, df, 0, 100.0, "whale", 6.0, 4.0)
     assert outcome == "timeout"
     assert idx == 48
+
+
+def test_exit_metrics_basic():
+    from backend.backtest import _exit_metrics, SimTrade
+    trades = [
+        SimTrade("A", "whale", 100, 110, "win", 10.0, 60, cost_pct=0.5),
+        SimTrade("B", "whale", 100, 96, "loss", -4.0, 60, cost_pct=0.5),
+    ]
+    n, win, avgw, maxw, net = _exit_metrics(trades)
+    assert n == 2
+    assert win == pytest.approx(50.0)
+    assert avgw == pytest.approx(10.0)
+    assert maxw == pytest.approx(10.0)
+    assert net == pytest.approx(((10 - 0.5) + (-4 - 0.5)) / 2)  # +2.5
+
+
+def test_run_exit_mode_sweep_smoke(cfg, capsys):
+    from backend.backtest import run_exit_mode_sweep
+    df = candles(_WARMUP + 60)
+    run_exit_mode_sweep(cfg, {"AAA": df}, regime=None, holdout=0)
+    out = capsys.readouterr().out
+    assert "roi" in out and "ema9" in out and "ema21" in out

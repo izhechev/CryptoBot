@@ -618,6 +618,55 @@ def run_exit_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
     print("\n(net_exp = average net P&L per trade after fees+slippage; higher is better)")
 
 
+def _exit_metrics(trades: list[SimTrade]) -> tuple[int, float, float, float, float]:
+    """(trades, win%, avg win %, max win %, net expectancy %) for one config."""
+    if not trades:
+        return (0, 0.0, 0.0, 0.0, 0.0)
+    net = [t.pnl_pct - t.cost_pct for t in trades]
+    wins = [t.pnl_pct for t in trades if t.pnl_pct > 0]
+    n = len(trades)
+    return (n, len(wins) / n * 100,
+            statistics.mean(wins) if wins else 0.0,
+            max(t.pnl_pct for t in trades),
+            statistics.mean(net))
+
+
+def run_exit_mode_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
+                        regime: Optional[pd.Series], holdout: int = 0) -> None:
+    """Compare the current `roi` exits vs `ema_ride` (length 9/21 x scale on/off) on
+    the whale strategy. Adoption: take ema_ride live only if it beats roi on net
+    expectancy out-of-sample (holdout), not just in-sample."""
+    configs: list[tuple[str, Config]] = [
+        (f"roi  scale={cfg.scale_out_enabled}", replace(cfg, whale_exit_mode="roi"))]
+    for length in (9, 21):
+        for scale in (True, False):
+            configs.append((f"ema{length} scale={scale}",
+                            replace(cfg, whale_exit_mode="ema_ride",
+                                    ema_ride_length=length, scale_out_enabled=scale)))
+
+    def evaluate(c: Config, segment: str) -> list[SimTrade]:
+        trades: list[SimTrade] = []
+        for sym, df in histories.items():
+            s, e = _segment_bounds(len(df), holdout, segment)
+            trades.extend(simulate_coin(c, sym, df, regime, strategies="whale",
+                                        scan_start=s, scan_end=e))
+        return trades
+
+    seg = "train" if holdout else "all"
+    print(f"\n{'config':18} {'trades':>6} {'win%':>5} {'avgW':>6} {'maxW':>7} {'net_exp':>8}")
+    rows = []
+    for label, c in configs:
+        m = _exit_metrics(evaluate(c, seg))
+        rows.append((label, c))
+        print(f"{label:18} {m[0]:>6} {m[1]:>4.0f}% {m[2]:>+5.1f}% {m[3]:>+6.1f}% {m[4]:>+7.2f}%")
+    if holdout:
+        print(f"\n--- OUT-OF-SAMPLE (last {holdout // _CANDLES_PER_DAY} days, never ranked) ---")
+        for label, c in rows:
+            m = _exit_metrics(evaluate(c, "test"))
+            print(f"  {label:18} {m[0]:>4}tr {m[1]:>3.0f}%w  net {m[4]:+.2f}%  maxW {m[3]:+.1f}%")
+    print("\n(net_exp = avg net P&L/trade after costs; adopt ema_ride only if it beats roi OOS)")
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser(description="Replay history through the live logic")
     ap.add_argument("--days", type=int, default=21)
@@ -626,7 +675,7 @@ async def main() -> None:
                     help="skip the top-N market-cap coins (test mid/small caps, "
                          "where the live bot actually finds whales)")
     ap.add_argument("--strategy", choices=["both", "whale", "spot"], default="both")
-    ap.add_argument("--sweep", choices=["whale", "spot", "whale-exits"], default=None,
+    ap.add_argument("--sweep", choices=["whale", "spot", "whale-exits", "whale-exit-mode"], default=None,
                     help="grid-search parameters for one strategy instead of a single run")
     ap.add_argument("--min-volume", type=float, default=0,
                     help="only test coins with at least this much 24h USD volume "
@@ -674,6 +723,9 @@ async def main() -> None:
         return
     if args.sweep == "whale-exits":
         run_exit_sweep(cfg, histories, regime, holdout=holdout)
+        return
+    if args.sweep == "whale-exit-mode":
+        run_exit_mode_sweep(cfg, histories, regime, holdout=holdout)
         return
 
     trades: list[SimTrade] = []
