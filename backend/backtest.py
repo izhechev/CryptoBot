@@ -103,6 +103,10 @@ def simulate_exit(cfg: Config, df: pd.DataFrame, entry_idx: int, entry_price: fl
     peak = entry_price
     scale_price: Optional[float] = None
     f = cfg.scale_out_fraction
+    ema_ride = cfg.whale_exit_mode == "ema_ride"
+    ema = (df["close"].ewm(span=cfg.ema_ride_length, adjust=False).mean()
+           if ema_ride else None)
+    riding = False  # ema_ride scale-off: True once past the first ROI target
 
     def blended(runner_exit: float) -> float:
         """Synthetic exit price combining the scaled half and the runner half."""
@@ -114,6 +118,37 @@ def simulate_exit(cfg: Config, df: pd.DataFrame, entry_idx: int, entry_price: fl
         low = float(df["low"].iloc[i])
         close = float(df["close"].iloc[i])
         elapsed_min = (i - entry_idx) * 15
+
+        if ema_ride:
+            ema_i = float(ema.iloc[i])
+            # Disaster floor first, always.
+            if low <= stop_level:
+                if scale_price is not None:
+                    px = blended(stop_level)
+                    return i, px, "win" if px > entry_price else "loss"
+                return i, stop_level, "loss"
+            # Banked half (scale-on) or riding the full position (scale-off):
+            if scale_price is not None or riding:
+                if close < ema_i:  # momentum gone — exit
+                    px = blended(close) if scale_price is not None else close
+                    return i, px, "win" if px > entry_price else "loss"
+                if elapsed_min >= max_hold_min:
+                    px = blended(close) if scale_price is not None else close
+                    return i, px, "timeout"
+                peak = max(peak, high)
+                continue
+            # Pre-target: wait for the first decaying-ROI target, then start riding.
+            target = entry_price * (1 + roi_target(cfg, strategy, elapsed_min) / 100)
+            if high >= target:
+                if cfg.scale_out_enabled:
+                    scale_price = target  # bank half (regardless of armed = fast-mover fix)
+                else:
+                    riding = True         # full position rides the EMA
+            if elapsed_min >= max_hold_min:
+                px = blended(close) if scale_price is not None else close
+                return i, px, "timeout"
+            peak = max(peak, high)
+            continue
 
         if scale_price is not None:
             # Runner half: stop sits at breakeven; trail follows the peak.
