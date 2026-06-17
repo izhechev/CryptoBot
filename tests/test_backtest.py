@@ -261,3 +261,71 @@ def test_exit_sweep_grid_shape():
     combos = list(itertools.product(*_EXIT_SWEEP_GRID.values()))
     assert len(combos) == 36  # 3 roi tables x 3 arms x 2 trails x 2 scale
     assert set(_ROI_TABLES) == {"current", "slow-decay", "trail-only"}
+
+
+def _ema_ride_cfg(cfg, length, scale):
+    from dataclasses import replace
+    return replace(cfg, whale_exit_mode="ema_ride", ema_ride_length=length,
+                   scale_out_enabled=scale)
+
+
+def test_ema_ride_scale_off_rides_then_exits_on_close_below(cfg):
+    """Full-ride: trigger the ride at the +15% target, ride while closes hold above
+    the EMA-3, exit on the first close below it. EMA-3 (alpha=0.5) of closes
+    [100,108,108,108,104]: ema=[100,104,106,107,105.5]; close 104 < 105.5 -> exit."""
+    c = _ema_ride_cfg(cfg, length=3, scale=False)
+    df = candles(20)
+    closes = df.columns.get_loc("close"); highs = df.columns.get_loc("high")
+    df.iloc[0, highs] = 116.0                    # +16% high arms the ride (target +15%)
+    for i, v in enumerate([108, 108, 108, 104], start=1):
+        df.iloc[i, closes] = float(v)
+        df.iloc[i, highs] = float(v)             # keep high >= close (no false peak)
+    idx, price, outcome = simulate_exit(c, df, 0, 100.0, "whale", 6.0, 4.0)
+    assert idx == 4
+    assert price == pytest.approx(104.0)         # exits at the close that broke the EMA
+    assert outcome == "win"                      # 104 > entry 100
+
+
+def test_ema_ride_scale_on_banks_half_then_rides(cfg):
+    """Scale-on: bank half at the +15% target (115), runner rides EMA-3, exits at
+    close 104. Blended = 0.5*(+15%) + 0.5*(+4%) = +9.5% -> price 109.5."""
+    c = _ema_ride_cfg(cfg, length=3, scale=True)
+    df = candles(20)
+    closes = df.columns.get_loc("close"); highs = df.columns.get_loc("high")
+    df.iloc[0, highs] = 116.0
+    for i, v in enumerate([108, 108, 108, 104], start=1):
+        df.iloc[i, closes] = float(v)
+        df.iloc[i, highs] = float(v)
+    idx, price, outcome = simulate_exit(c, df, 0, 100.0, "whale", 6.0, 4.0)
+    assert idx == 4
+    assert price == pytest.approx(109.5)         # blended bank(+15%) + runner(+4%)
+    assert outcome == "win"
+
+
+def test_ema_ride_fast_mover_banks_half(cfg):
+    """A fast +30% spike at candle 0 still banks half at the +15% target (not skipped
+    because it 'armed'). The banked half guarantees a green blended result."""
+    c = _ema_ride_cfg(cfg, length=3, scale=True)
+    df = candles(60)
+    df.iloc[0, df.columns.get_loc("high")] = 130.0   # +30% in one candle
+    idx, price, outcome = simulate_exit(c, df, 0, 100.0, "whale", 6.0, 4.0)
+    assert price > 100.0                          # the banked half guarantees green
+
+
+def test_ema_ride_atr_stop_still_fires(cfg):
+    """A crash through the ATR stop still exits as a loss in ema_ride mode."""
+    c = _ema_ride_cfg(cfg, length=3, scale=False)
+    df = candles(20)
+    df.iloc[0, df.columns.get_loc("low")] = 93.0  # pierces the 6% stop (level 94)
+    idx, price, outcome = simulate_exit(c, df, 0, 100.0, "whale", 6.0, 4.0)
+    assert outcome == "loss"
+    assert price == pytest.approx(94.0)
+
+
+def test_ema_ride_times_out_if_never_targets(cfg):
+    """Never reaches the first ROI target -> behaves like today: rides to timeout."""
+    c = _ema_ride_cfg(cfg, length=3, scale=False)
+    df = candles(60)                              # flat 100, whale max-hold 12h = 48 candles
+    idx, price, outcome = simulate_exit(c, df, 0, 100.0, "whale", 6.0, 4.0)
+    assert outcome == "timeout"
+    assert idx == 48
