@@ -103,21 +103,25 @@ book:
 # strategy with its own positions, exits, and win/loss stats.
 whale:
   enabled: true
-  bypass_regime: true           # LIQUID-UNIVERSE SWEEP: on >=$10M/day coins, bear-market
-                                # whales measured +0.93%/trade (31 trades, 74% win) — the
-                                # earlier "obey regime" verdict was a thin-coin result.
+  bypass_regime: false          # 2026-06-17 SWEEP (60 coins, 30d, 9d holdout): EVERY
+                                # regime-OBEYING config was net-positive OOS while EVERY
+                                # bypass config was net-NEGATIVE. Bypassing = whales long
+                                # into BTC downtrends = the correlated overnight losses.
+                                # Trades less often (bull regimes only) but profitably.
   min_coin_volume_24h: 10000000 # whales only ride coins with >=$10M daily volume (10/12
                                 # combos green there; thin mid-caps lose to slippage)
-  volume_multiple: 3.0          # on liquid coins the 3x floor measured best (spikes are real)
+  volume_multiple: 4.0          # holdout winner chase+obey+4.0 = +1.52%/trade, 75% win OOS
+                                # (n=8, thin) vs 3.0's +0.40% (n=13). 4.0 = pickier spikes.
   min_taker_buy_share: 0.55     # spike window must be buyer-dominated (taker buys >= 55% of
                                 # volume on Binance-routed coins; seller-led spikes = distribution)
   scan_interval_minutes: 15     # fast whale-only pass over the liquid universe (full scan is
                                 # hourly; this catches spikes at their confirmation candle)
   max_funding_rate: 0.001       # veto if the coin's perp funding >= 0.1%/8h — crowded longs
                                 # precede deleveraging flushes (neutral funding is ~0.01%)
-  entry_mode: retest            # SWEEP v2: retest+obedient+5x was the ONLY green whale
-                                # config (100% win, +2.0%/trade net; n=4 — thin sample).
-                                # "chase" = old buy-at-market behavior.
+  entry_mode: chase             # 2026-06-17 SWEEP holdout winner used chase+obey-regime
+                                # (retest+obey had ~1 trade — untested). "chase" = buy at
+                                # market on the confirmed spike. Revert to "retest" if live
+                                # results don't hold (thin OOS sample).
   retest_wait_candles: 8        # the pullback limit stays working this many 15m candles
   price_thrust_pct: 3.0         # price up >= 3% over the thrust lookback
   max_thrust_pct: 18            # reject if thrust >= this % over the lookback (blow-off top: DEGO/RAD)
