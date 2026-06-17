@@ -93,8 +93,10 @@ class Scanner:
         ok = bool(df["close"].iloc[-1] > ema)
         if not ok:
             logger.info(
-                "Market regime: BTC below 4h EMA-50 — spot needs score >=%.0f, whales unaffected",
+                "Market regime: BTC below 4h EMA-50 — spot needs score >=%.0f; whales %s",
                 self._cfg.bear_signal_threshold,
+                "bypass (still trade)" if self._cfg.whale_bypass_regime
+                else "BLOCKED until BTC reclaims its 4h trend",
             )
         return ok
 
@@ -307,8 +309,9 @@ class Scanner:
         return gecko_price if (gecko_price and gecko_price > 0) else exchange_price
 
     async def _open_whale(self, coin: CoinListing, whale, df) -> bool:
-        # Whales can bypass the (multi-day) BTC regime gate — they're short-hold and
-        # already require the coin itself to be in an uptrend. Still respect the cap.
+        # Whales obey the BTC regime by default (2026-06-17 sweep: bypassing it was
+        # net-negative OOS — longing into downtrends). bypass_regime=true restores the
+        # old always-trade behavior. Always respect the concurrent-position cap.
         if not self._can_open(respect_regime=not self._cfg.whale_bypass_regime):
             return False
         # Correlated-exposure cap: concurrent whale longs are one market-beta bet
