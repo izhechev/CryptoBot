@@ -11,7 +11,7 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const WS = API.replace(/^http/, "ws") + "/ws";
 
 const EMPTY_STRAT = { total_closed: 0, wins: 0, losses: 0, win_rate: 0, open_positions: 0, signals_today: 0, avg_pnl_pct: 0 };
-const EMPTY_STATS: Stats = { overall: EMPTY_STRAT, standard: EMPTY_STRAT, whale: EMPTY_STRAT, next_scan_in: null };
+const EMPTY_STATS: Stats = { overall: EMPTY_STRAT, standard: EMPTY_STRAT, whale: EMPTY_STRAT, next_scan_in: null, regime_bullish: null, whales_blocked: 0 };
 
 export default function Dashboard() {
   const [positions, setPositions] = useState<Position[]>([]);

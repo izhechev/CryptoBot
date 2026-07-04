@@ -52,6 +52,8 @@ export interface Stats {
   standard: StrategyStats;
   whale: StrategyStats;
   next_scan_in: number | null;  // seconds until the next full scan (backend clock)
+  regime_bullish: boolean | null;  // BTC vs its 4h EMA-50; null until the first check
+  whales_blocked: number;          // whale spikes skipped in the current bear stretch
 }
 
 export interface BotConfig {

@@ -131,6 +131,75 @@ async def test_whale_bypasses_bearish_regime(scanner, db):
 
 
 @pytest.mark.asyncio
+async def test_bear_regime_blocks_whale_when_obeying(scanner, db):
+    """whale_bypass_regime=False (the live config since the 2026-06-17 sweep):
+    a bear BTC regime is a hard block for whale entries."""
+    scanner._cfg.whale_bypass_regime = False
+    scanner._market_regime_ok = AsyncMock(return_value=False)
+    _whale_setup(scanner)
+    with patch("backend.scanner.detect_whale", return_value=WhaleSignal(5.0, 4.5)), \
+         patch("backend.scanner.compute_indicators",
+               return_value=IndicatorScores(0.0, 0.0, 0.0, 0.0, 0.0, False, 10.0)):
+        await scanner.run_once()
+    assert not db.has_open_position("PEPE", strategy="whale")
+    assert db.get_pending_orders() == []
+
+
+@pytest.mark.asyncio
+async def test_whale_pass_refreshes_stale_bear_regime(scanner, db):
+    """The 15-min fast lane must re-check the BTC regime itself — the hourly
+    scan's verdict is up to an hour stale, and the lane trades on it."""
+    scanner._cfg.whale_bypass_regime = False
+    scanner._regime_bullish = True  # stale hourly verdict
+    scanner._market_regime_ok = AsyncMock(return_value=False)  # BTC broke down since
+    scanner._liquid_coins = [
+        CoinListing(symbol="PEPE", name="Pepe", price=0.0000012, volume_24h=2e8, change_24h=20.0)
+    ]
+    scanner._market.fetch_candles = AsyncMock(return_value=make_candle_df())
+    scanner._market.fetch_current_price = AsyncMock(return_value=0.0000012)
+    with patch("backend.scanner.detect_whale", return_value=WhaleSignal(5.0, 4.5)):
+        opened = await scanner.whale_pass()
+    assert opened == 0
+    assert not db.has_open_position("PEPE", strategy="whale")
+    scanner._market_regime_ok.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_whale_pass_trades_when_regime_flips_bull(scanner, db):
+    """Converse: BTC reclaimed its 4h trend since the last hourly scan — the
+    fresh check unblocks the lane within 15 min instead of up to an hour."""
+    scanner._cfg.whale_bypass_regime = False
+    scanner._regime_bullish = False  # stale bear verdict
+    scanner._market_regime_ok = AsyncMock(return_value=True)
+    scanner._liquid_coins = [
+        CoinListing(symbol="PEPE", name="Pepe", price=0.0000012, volume_24h=2e8, change_24h=20.0)
+    ]
+    scanner._market.fetch_candles = AsyncMock(return_value=make_candle_df())
+    scanner._market.fetch_current_price = AsyncMock(return_value=0.0000012)
+    with patch("backend.scanner.detect_whale", return_value=WhaleSignal(5.0, 4.5)):
+        await scanner.whale_pass()
+    assert db.has_open_position("PEPE", strategy="whale") or len(db.get_pending_orders()) == 1
+
+
+@pytest.mark.asyncio
+async def test_regime_block_is_counted_for_dashboard(scanner, db):
+    """A regime-blocked whale must be visible (MARKET_STATE), not a silent skip —
+    a week of 'no positions' has to be explainable from the dashboard."""
+    from backend.market_state import MARKET_STATE
+    MARKET_STATE.regime_bullish = None
+    MARKET_STATE.whales_blocked = 0
+    scanner._cfg.whale_bypass_regime = False
+    scanner._market_regime_ok = AsyncMock(return_value=False)
+    _whale_setup(scanner)
+    with patch("backend.scanner.detect_whale", return_value=WhaleSignal(5.0, 4.5)), \
+         patch("backend.scanner.compute_indicators",
+               return_value=IndicatorScores(0.0, 0.0, 0.0, 0.0, 0.0, False, 10.0)):
+        await scanner.run_once()
+    assert MARKET_STATE.regime_bullish is False
+    assert MARKET_STATE.whales_blocked == 1
+
+
+@pytest.mark.asyncio
 async def test_no_entry_when_at_max_positions(scanner, db):
     """Concurrent-position cap reached -> no new entries."""
     scanner._cfg.max_open_positions = 0

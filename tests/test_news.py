@@ -95,7 +95,10 @@ def test_analyze_sentiment_fallback_on_empty_headlines(news_client):
 
 def test_parse_catalyst_real_news():
     from backend.news import NewsClient
-    text = ("LATEST_NEWS_DATE: June 9, 2026\n"
+    from datetime import datetime, timedelta, timezone
+    # A date inside the 72h freshness window — a hardcoded one rots as time passes.
+    fresh = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%B %d, %Y")
+    text = (f"LATEST_NEWS_DATE: {fresh}\n"
             "CATALYST: listing\n"
             "SENTIMENT: 78\n"
             "REASON: Newly listed on Binance.")

@@ -33,6 +33,23 @@ async def test_get_stats_empty(app):
 
 
 @pytest.mark.asyncio
+async def test_stats_reports_market_regime(app):
+    """The dashboard must be able to say WHY the board is empty: /stats carries
+    the BTC regime and how many whale spikes the bear regime has blocked."""
+    from backend.market_state import MARKET_STATE
+    MARKET_STATE.regime_bullish = False
+    MARKET_STATE.whales_blocked = 3
+    try:
+        resp = await _get(app, "/stats")
+        data = resp.json()
+        assert data["regime_bullish"] is False
+        assert data["whales_blocked"] == 3
+    finally:
+        MARKET_STATE.regime_bullish = None
+        MARKET_STATE.whales_blocked = 0
+
+
+@pytest.mark.asyncio
 async def test_get_signals_empty(app):
     resp = await _get(app, "/signals")
     assert resp.status_code == 200

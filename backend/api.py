@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.config import Config
 from backend.storage import Storage
 from backend.scan_clock import SCAN_CLOCK
+from backend.market_state import MARKET_STATE
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,10 @@ def create_app(db: Storage, cfg: Config) -> FastAPI:
             "standard": db.get_stats(strategy="standard", cost_pct=cfg.assumed_cost_pct),
             "whale": db.get_stats(strategy="whale", cost_pct=cfg.assumed_cost_pct),
             "next_scan_in": round(rem) if rem is not None else None,
+            # Why-is-the-board-empty context: whales (the only live strategy) pause
+            # while BTC is below its 4h EMA-50 — show that instead of a silent zero.
+            "regime_bullish": MARKET_STATE.regime_bullish,
+            "whales_blocked": MARKET_STATE.whales_blocked,
         }
 
     @app.get("/config")

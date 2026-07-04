@@ -60,6 +60,15 @@ export function StatBar({ stats, connected, nextScanIn }: {
                            color: connected ? "var(--green)" : "var(--red)" }} />
             {connected ? "LIVE" : "OFFLINE"}
           </span>
+          {stats.regime_bullish === false && (
+            <span className="text-[11px]" style={{ color: "var(--red)" }}>
+              🐻 BEAR — entries paused
+              {stats.whales_blocked > 0 ? ` (${stats.whales_blocked} whales blocked)` : ""}
+            </span>
+          )}
+          {stats.regime_bullish === true && (
+            <span className="text-[11px]" style={{ color: "var(--green)" }}>🐂 BULL regime</span>
+          )}
         </div>
       </div>
     </div>
