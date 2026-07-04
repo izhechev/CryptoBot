@@ -18,6 +18,7 @@ from backend.notify import Notifier
 from backend.format_utils import fmt_price
 from backend.gecko import GeckoClient
 from backend.scan_clock import SCAN_CLOCK
+from backend.market_state import MARKET_STATE
 
 logger = logging.getLogger(__name__)
 _THROTTLE_DELAY = 0.1  # seconds between coins, to respect exchange rate limits
@@ -59,7 +60,7 @@ class Scanner:
 
     async def run_once(self) -> None:
         logger.info("Scan started")
-        self._regime_bullish = await self._market_regime_ok()
+        await self._refresh_regime()
         coins = await self._cmc.fetch_all_coins(min_volume_24h=self._cfg.min_volume_24h)
         total = len(coins)
         # Refresh the whale fast-lane universe (no extra CMC credits).
@@ -81,6 +82,16 @@ class Scanner:
         self._log_scan_summary(results)
         logger.info("Scan complete")
 
+    async def _refresh_regime(self) -> None:
+        """Re-check the BTC regime and publish it for the API/dashboard. Called by
+        the hourly scan AND every whale fast pass — the lane trades every 15 min,
+        so an hour-stale verdict both blocks fresh bull windows and trades into
+        expired ones (BTC regime flips mid-hour: 2026-07-02 reclaim)."""
+        self._regime_bullish = await self._market_regime_ok()
+        MARKET_STATE.regime_bullish = self._regime_bullish
+        if self._regime_bullish:
+            MARKET_STATE.whales_blocked = 0  # count is per bear stretch
+
     async def _market_regime_ok(self) -> bool:
         """Don't open new longs into a falling market: require BTC above its 4h EMA-50.
         If BTC data is unavailable, default to allowing entries."""
@@ -100,11 +111,8 @@ class Scanner:
             )
         return ok
 
-    def _can_open(self, respect_regime: bool = True) -> bool:
-        """Gate an entry on the concurrent-position cap, and — for strategies that
-        hard-respect the regime — on the market regime itself."""
-        if respect_regime and not self._regime_bullish:
-            return False
+    def _can_open(self) -> bool:
+        """Gate an entry on the concurrent-position cap."""
         return len(self._db.get_open_positions()) < self._cfg.max_open_positions
 
     def _in_cooldown(self, symbol: str) -> bool:
@@ -234,7 +242,7 @@ class Scanner:
         # In a bear regime spot isn't blocked, it needs an exceptional score + budget.
         if ind_scores.total < self._spot_threshold():
             return result
-        if not self._can_open(respect_regime=False) or self._in_cooldown(coin.symbol):
+        if not self._can_open() or self._in_cooldown(coin.symbol):
             return result
         if not await self._book_ok(coin):  # cheap, before the Gemini call
             return result
@@ -311,8 +319,14 @@ class Scanner:
     async def _open_whale(self, coin: CoinListing, whale, df) -> bool:
         # Whales obey the BTC regime by default (2026-06-17 sweep: bypassing it was
         # net-negative OOS — longing into downtrends). bypass_regime=true restores the
-        # old always-trade behavior. Always respect the concurrent-position cap.
-        if not self._can_open(respect_regime=not self._cfg.whale_bypass_regime):
+        # old always-trade behavior. A regime skip is logged and counted: a week of
+        # "no positions" must be explainable from the log and the dashboard.
+        if not self._regime_bullish and not self._cfg.whale_bypass_regime:
+            MARKET_STATE.whales_blocked += 1
+            logger.info("Whale %s skipped — bear regime (BTC below 4h EMA-50)", coin.symbol)
+            return False
+        # Always respect the concurrent-position cap.
+        if not self._can_open():
             return False
         # Correlated-exposure cap: concurrent whale longs are one market-beta bet
         # overnight (12 open -> one dip = six stop-outs). Skips are logged so the
@@ -407,6 +421,8 @@ class Scanner:
         """One fast whale-only sweep over the liquid universe (refreshed by the full
         scan). Spikes confirm on 15m candles; the hourly full scan arms retest limits
         up to 45 min late, so many expire unfilled. Same gates, just on time."""
+        # Fresh regime verdict for THIS pass — the hourly scan's is up to 1h stale.
+        await self._refresh_regime()
         opened = 0
         for coin in self._liquid_coins:
             try:
