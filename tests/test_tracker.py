@@ -170,8 +170,10 @@ async def test_atr_stop_uses_position_specific_pct(tracker, db):
 @pytest.mark.asyncio
 async def test_trailing_lets_runner_run_past_roi(tracker, db):
     """+20% after 2h: decaying ROI rung (+4%) would have booked it long ago, but the
-    armed trail keeps the runner OPEN while it keeps making highs."""
-    make_v4_position(db, "RUN", 100.0, stop_pct=6.0, trail_pct=4.0, hours_ago=2)
+    trail — armed by an EARLIER tick's peak, like the backtester's prior-candle
+    high-water mark — keeps the runner OPEN while it keeps making highs."""
+    pos = make_v4_position(db, "RUN", 100.0, stop_pct=6.0, trail_pct=4.0, hours_ago=2)
+    db.update_position_peak(pos.id, 110.0)  # peaked past the arm threshold earlier
     tracker._gecko.fetch_prices = AsyncMock(return_value={"RUN": 120.0})
     await tracker.run_once()
     assert len(db.get_open_positions()) == 1  # armed + at the high -> still riding
@@ -265,6 +267,21 @@ async def test_scale_out_banks_half_then_runner_trails(tracker, db):
     closed = db.get_all_positions()[0]
     assert closed.outcome == "win"
     assert closed.pnl_pct == pytest.approx(0.5 * 5.0 + 0.5 * 14.0, abs=0.1)  # +9.5%
+
+
+@pytest.mark.asyncio
+async def test_scale_out_fast_mover_banks_before_arming(tracker, db):
+    """One tick crosses the ROI target AND the arm threshold at once (the NFP +19%
+    jump): the scale half must still get banked. The backtester updates the peak
+    AFTER the exit checks, so a fast mover is un-armed at the target-hit candle and
+    scales; live must match or fast movers never bank anything."""
+    tracker._cfg.scale_out_enabled = True
+    make_v4_position(db, "NFP", 100.0, stop_pct=7.5, trail_pct=4.5, hours_ago=2)
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"NFP": 119.0})  # +19% in one tick
+    await tracker.run_once()
+    pos = db.get_open_positions()[0]
+    assert pos.scale_price == pytest.approx(119.0)   # half banked
+    assert pos.peak_price == pytest.approx(119.0)    # high-water mark still maintained
 
 
 @pytest.mark.asyncio
