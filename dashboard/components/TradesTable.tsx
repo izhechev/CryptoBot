@@ -11,6 +11,7 @@ const OUTCOME_STYLE: Record<string, { fg: string; bg: string }> = {
   win: { fg: "var(--green)", bg: "rgba(61,220,132,0.1)" },
   loss: { fg: "var(--red)", bg: "rgba(255,91,91,0.1)" },
   timeout: { fg: "var(--amber)", bg: "rgba(255,182,39,0.1)" },
+  dead: { fg: "var(--muted)", bg: "rgba(148,163,184,0.1)" },
 };
 
 export function TradesTable({ positions }: { positions: Position[] }) {

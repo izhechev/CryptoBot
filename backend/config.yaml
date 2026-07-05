@@ -44,6 +44,16 @@ exits:
   # Backtest-only until a sweep proves ema_ride beats roi out-of-sample.
   whale_exit_mode: roi
   ema_ride_length: 9
+  # Momentum-death exit: a whale that never touched +X% within H hours is a dead
+  # thrust — cut at market instead of bleeding to the 12h timeout (GIGGLE -2.75%).
+  # 2026-07-05 SWEEP (60 liquid coins, 30d, 9d holdout): EVERY stagnation variant
+  # beat baseline in-sample AND OOS (4h<+2%: +0.49% vs -0.10% train, -1.47% vs
+  # -2.01% OOS); ema_cut lost OOS — rejected. Peak-based on purpose: NFP dipped
+  # -4.8% before its +29% run but had touched +2.9% in 7min (a current-price rule
+  # would have cut it); +2% spares NFP with margin, +3% would have cut it.
+  whale_dead_exit_mode: stagnation
+  stagnation_hours: 4
+  stagnation_min_peak_pct: 2.0
   atr_stop_multiplier: 2.5      # stop distance = 2.5 x ATR% (sweep: 2.5 beat 1.5 in every
                                 # spot row; whales were indifferent across 1.5-2.5)
   stop_pct_min: 4.0

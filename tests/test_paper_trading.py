@@ -106,6 +106,65 @@ def test_whale_position_uses_whale_stop(trader, whale_event):
     assert trader.check_position(pos, current_price=92.5) == TradeOutcome.LOSS   # -7.5%
 
 
+# --- Stagnation (momentum-death) exit: 2026-07-05 sweep winner (4h < +2%).
+# Every stagnation variant beat baseline in- AND out-of-sample; ema_cut lost OOS.
+
+def _aged(pos, hours: float, peak: float = None):
+    return pos.__class__(**{**pos.__dict__,
+                            "entry_at": datetime.now(timezone.utc) - timedelta(hours=hours),
+                            "peak_price": peak if peak is not None else pos.peak_price})
+
+
+@pytest.fixture
+def stag_trader(cfg, db):
+    from dataclasses import replace
+    return PaperTrading(replace(cfg, whale_dead_exit_mode="stagnation",
+                                stagnation_hours=4.0, stagnation_min_peak_pct=2.0), db)
+
+
+def test_stagnation_cuts_dead_whale(stag_trader, whale_event):
+    """4.5h in, never peaked past +2%, sitting at -1%: momentum is dead — cut at
+    market instead of bleeding to the 12h timeout (GIGGLE)."""
+    pos = stag_trader.open_position(whale_event, entry_price=100.0)
+    pos = _aged(pos, hours=4.5, peak=101.0)  # peak +1% < +2%
+    assert stag_trader.check_position(pos, current_price=99.0) == TradeOutcome.DEAD
+
+
+def test_stagnation_holds_young_whale(stag_trader, whale_event):
+    """Same shape at 2h: inside the grace window — still riding."""
+    pos = stag_trader.open_position(whale_event, entry_price=100.0)
+    pos = _aged(pos, hours=2.0, peak=101.0)
+    assert stag_trader.check_position(pos, current_price=99.0) is None
+
+
+def test_stagnation_spares_a_mover(stag_trader, whale_event):
+    """Touched +3% early: the thrust was alive — not stagnant, no cut."""
+    pos = stag_trader.open_position(whale_event, entry_price=100.0)
+    pos = _aged(pos, hours=4.5, peak=103.0)
+    assert stag_trader.check_position(pos, current_price=99.0) is None
+
+
+def test_stagnation_is_whale_only(stag_trader, signal_event):
+    """Spot positions never use the whale dead-exit."""
+    pos = stag_trader.open_position(signal_event, entry_price=150.0)
+    pos = _aged(pos, hours=4.5, peak=151.0)
+    assert stag_trader.check_position(pos, current_price=149.0) is None
+
+
+def test_stop_beats_stagnation(stag_trader, whale_event):
+    """A stagnant trade that ALSO pierced the stop is a stop-loss, not a dead cut."""
+    pos = stag_trader.open_position(whale_event, entry_price=100.0)
+    pos = _aged(pos, hours=4.5, peak=101.0)
+    assert stag_trader.check_position(pos, current_price=92.0) == TradeOutcome.LOSS
+
+
+def test_stagnation_off_by_default(trader, whale_event):
+    """Default config: mode off — the dead zone rides to timeout as before."""
+    pos = trader.open_position(whale_event, entry_price=100.0)
+    pos = _aged(pos, hours=4.5, peak=101.0)
+    assert trader.check_position(pos, current_price=99.0) is None
+
+
 def test_stats_scoped_by_strategy(trader, signal_event, whale_event, db):
     std = trader.open_position(signal_event, entry_price=150.0)
     trader.close_position(std, current_price=165.5, outcome=TradeOutcome.WIN)

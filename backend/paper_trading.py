@@ -11,6 +11,7 @@ class TradeOutcome(str, Enum):
     LOSS = "loss"
     TIMEOUT = "timeout"
     SCALE = "scale"  # not a close: bank the scale fraction, let the rest run
+    DEAD = "dead"    # momentum-death cut: the thrust never got going
 
 
 def roi_target(cfg: Config, strategy: str, elapsed_min: float) -> float:
@@ -81,7 +82,10 @@ class PaperTrading:
         2. armed trailing exit — once the trade has PEAKED past trail_arm_pct, the
            ROI cap is lifted and we exit on a trail_pct give-back from the peak;
         3. time-decaying ROI target (books fading winners that never armed);
-        4. volatility-scaled stop-loss; 5. max-hold timeout."""
+        4. volatility-scaled stop-loss; 5. stagnation cut — a whale that never
+           touched +X% within H hours is dead momentum, close at market (2026-07-05
+           sweep: every stagnation variant beat baseline in- and out-of-sample);
+        6. max-hold timeout."""
         _, _, max_hold_hours = self._exit_params(pos.strategy)
         pnl_pct = (current_price - pos.entry_price) / pos.entry_price * 100
 
@@ -112,6 +116,11 @@ class PaperTrading:
             return TradeOutcome.SCALE if self._cfg.scale_out_enabled else TradeOutcome.WIN
         if pnl_pct <= -self._stop_pct_for(pos):
             return TradeOutcome.LOSS
+        if (pos.strategy == "whale" and not armed
+                and self._cfg.whale_dead_exit_mode == "stagnation"
+                and elapsed >= timedelta(hours=self._cfg.stagnation_hours)
+                and peak_pnl < self._cfg.stagnation_min_peak_pct):
+            return TradeOutcome.DEAD
         if elapsed >= timedelta(hours=max_hold_hours):
             return TradeOutcome.TIMEOUT
         return None
