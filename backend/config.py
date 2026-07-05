@@ -136,12 +136,14 @@ class Config:
     # it out-of-sample. Read by backtest.simulate_exit only (live unchanged).
     whale_exit_mode: str = "roi"
     ema_ride_length: int = 9   # EMA period (in 15m candles) the runner rides
-    # Momentum-death exit (BACKTEST EXPERIMENT): cut a whale trade that never got
-    # going instead of bleeding to the 12h timeout (GIGGLE: -2.75% over 12h in the
-    # dead zone between the stop and any target). Applies only BEFORE the trade
-    # arms or scales; the stop/trail/ROI/timeout all stay. "off" until a sweep
-    # winner beats baseline on the holdout. Read by backtest.simulate_exit only.
-    whale_dead_exit_mode: str = "off"   # off | ema_cut | stagnation
+    # Momentum-death exit: cut a whale trade that never got going instead of
+    # bleeding to the 12h timeout (GIGGLE: -2.75% over 12h in the dead zone
+    # between the stop and any target). Applies only BEFORE the trade arms or
+    # scales; the stop/trail/ROI/timeout all stay. 2026-07-05 sweep: stagnation
+    # beat baseline in-sample and OOS in every variant and is LIVE (peak-based:
+    # NFP's -4.8% dip before its +29% run survives); ema_cut lost OOS. Live
+    # (check_position) supports stagnation only; the backtester simulates both.
+    whale_dead_exit_mode: str = "off"   # off | ema_cut (backtest-only) | stagnation
     dead_ema_length: int = 20           # ema_cut: exit on a 15m close below EMA-N
     stagnation_hours: float = 3.0       # stagnation: give the thrust this long...
     stagnation_min_peak_pct: float = 2.0  # ...to touch +X%, else cut at market

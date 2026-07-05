@@ -299,6 +299,20 @@ async def test_scale_out_runner_breakeven_floor(tracker, db):
 
 
 @pytest.mark.asyncio
+async def test_stagnation_records_dead_outcome(tracker, db):
+    """A stagnant whale (5h old, never peaked +2%) is closed at the market price
+    with outcome 'dead' — visible in history as a momentum cut, not a timeout."""
+    tracker._cfg.whale_dead_exit_mode = "stagnation"
+    make_open_position(db, "GIG", 100.0, hours_ago=5, strategy="whale")
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"GIG": 99.0})
+    await tracker.run_once()
+    closed = db.get_all_positions()[0]
+    assert closed.outcome == "dead"
+    assert closed.exit_price == pytest.approx(99.0)
+    assert closed.pnl_pct == pytest.approx(-1.0)
+
+
+@pytest.mark.asyncio
 async def test_retest_fill_cancelled_at_whale_cap(tracker, db):
     """A working limit that fills while the whale book is full is cancelled, not
     opened — the cap holds at both entry paths."""
