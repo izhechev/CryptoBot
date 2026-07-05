@@ -351,3 +351,100 @@ def test_run_exit_mode_sweep_smoke(cfg, capsys):
     run_exit_mode_sweep(cfg, {"AAA": df}, regime=None, holdout=0)
     out = capsys.readouterr().out
     assert "roi" in out and "ema9" in out and "ema21" in out
+
+
+# --- Momentum-death exit (pre-target, pre-arm): cut trades that never get going
+# --- instead of bleeding to the max-hold timeout (GIGGLE: -2.75% over 12h).
+
+def _dead_cfg(cfg, mode, **kw):
+    from dataclasses import replace
+    return replace(cfg, whale_dead_exit_mode=mode, **kw)
+
+
+def test_dead_ema_cut_exits_on_close_below_ema(cfg):
+    """ema_cut: a 15m close below EMA-20 while the trade never reached a target
+    exits at that close, labeled 'dead' (the entry thesis was price > EMA)."""
+    c = _dead_cfg(cfg, "ema_cut", dead_ema_length=20)
+    df = candles(20)
+    df.iloc[3, df.columns.get_loc("close")] = 97.0  # EMA-20 of flat 100s ≈ 99.4
+    df.iloc[3, df.columns.get_loc("low")] = 96.5    # above the 6% stop (94)
+    idx, price, outcome = simulate_exit(c, df, 0, 100.0, "whale", 6.0, 4.0)
+    assert outcome == "dead"
+    assert idx == 3
+    assert price == pytest.approx(97.0)
+
+
+def test_dead_ema_cut_defers_to_armed_trail(cfg):
+    """Once the trade has armed (peaked past trail_arm_pct), the trail owns the
+    exit — a close below the EMA must NOT relabel it 'dead'."""
+    c = _dead_cfg(cfg, "ema_cut", dead_ema_length=20)
+    df = candles(20)
+    df.iloc[0, df.columns.get_loc("high")] = 110.0  # arms the trail (peak +10%)
+    df.iloc[1, df.columns.get_loc("close")] = 97.0  # below the EMA...
+    df.iloc[1, df.columns.get_loc("low")] = 96.0    # ...but the trail fires first
+    idx, price, outcome = simulate_exit(c, df, 0, 100.0, "whale", 6.0, 4.0)
+    assert outcome == "win"
+    assert price == pytest.approx(105.6)            # 110 * 0.96 trail fill
+
+
+def test_stagnation_exits_after_hours_without_peak(cfg):
+    """stagnation: after H hours the trade never touched +X% -> close at market,
+    labeled 'dead' (GIGGLE would have been cut at 3h at ~-1%)."""
+    c = _dead_cfg(cfg, "stagnation", stagnation_hours=3.0, stagnation_min_peak_pct=2.0)
+    df = candles(60)                                # flat: highs +1%, peak never +2%
+    idx, price, outcome = simulate_exit(c, df, 0, 100.0, "whale", 6.0, 4.0)
+    assert outcome == "dead"
+    assert idx == 12                                # 3h = 12 x 15m candles
+    assert price == pytest.approx(100.0)
+
+
+def test_stagnation_holds_if_it_peaked(cfg):
+    """A trade that DID touch +X% early is not stagnant — no dead exit; it rides
+    to whatever the normal exits decide (here: timeout)."""
+    c = _dead_cfg(cfg, "stagnation", stagnation_hours=3.0, stagnation_min_peak_pct=2.0)
+    df = candles(60)
+    df.iloc[2, df.columns.get_loc("high")] = 103.0  # +3% touch at 30min (< +7% rung)
+    idx, price, outcome = simulate_exit(c, df, 0, 100.0, "whale", 6.0, 4.0)
+    assert outcome == "timeout"
+    assert idx == 48
+
+
+def test_dead_exit_off_by_default(cfg):
+    """Default mode 'off': a red drifter behaves exactly as today (timeout)."""
+    assert cfg.whale_dead_exit_mode == "off"
+    df = candles(60, price=100.0)
+    df.iloc[1:, df.columns.get_loc("close")] = 98.0  # GIGGLE-ish: red, above stop
+    df.iloc[1:, df.columns.get_loc("low")] = 97.5
+    df.iloc[1:, df.columns.get_loc("high")] = 98.5
+    idx, price, outcome = simulate_exit(cfg, df, 0, 100.0, "whale", 6.0, 4.0)
+    assert outcome == "timeout"
+    assert idx == 48
+
+
+def test_dead_exit_is_whale_only(cfg):
+    """The dead exit is a whale knob — spot trades never use it."""
+    c = _dead_cfg(cfg, "stagnation", stagnation_hours=3.0, stagnation_min_peak_pct=2.0)
+    df = candles(120)                               # flat; standard max hold 24h
+    idx, price, outcome = simulate_exit(c, df, 0, 100.0, "standard", 6.0, 4.0)
+    assert outcome == "timeout"
+    assert idx == 96
+
+
+def test_dead_exit_stop_still_wins_the_candle(cfg):
+    """A candle that pierces the stop AND closes below the EMA is a stop-loss —
+    the disaster floor fills first, at the stop level."""
+    c = _dead_cfg(cfg, "ema_cut", dead_ema_length=20)
+    df = candles(20)
+    df.iloc[2, df.columns.get_loc("close")] = 95.0
+    df.iloc[2, df.columns.get_loc("low")] = 93.0    # pierces the 6% stop (94)
+    idx, price, outcome = simulate_exit(c, df, 0, 100.0, "whale", 6.0, 4.0)
+    assert outcome == "loss"
+    assert price == pytest.approx(94.0)
+
+
+def test_run_dead_exit_sweep_smoke(cfg, capsys):
+    from backend.backtest import run_dead_exit_sweep
+    df = candles(_WARMUP + 60)
+    run_dead_exit_sweep(cfg, {"AAA": df}, regime=None, holdout=0)
+    out = capsys.readouterr().out
+    assert "off" in out and "ema_cut" in out and "stagnation" in out

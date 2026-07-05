@@ -55,7 +55,7 @@ class SimTrade:
     strategy: str
     entry_price: float
     exit_price: float
-    outcome: str               # win | loss | timeout
+    outcome: str               # win | loss | timeout | dead (momentum-death cut)
     pnl_pct: float             # gross
     held_min: float
     cost_pct: float = 0.5      # round-trip fees + liquidity-scaled slippage
@@ -107,6 +107,11 @@ def simulate_exit(cfg: Config, df: pd.DataFrame, entry_idx: int, entry_price: fl
     ema = (df["close"].ewm(span=cfg.ema_ride_length, adjust=False).mean()
            if ema_ride else None)
     riding = False  # ema_ride scale-off: True once past the first ROI target
+    # Momentum-death exit (whales, pre-target/pre-arm only): cut a trade that
+    # never got going instead of bleeding to the timeout (GIGGLE: -2.75%/12h).
+    dead_mode = cfg.whale_dead_exit_mode if strategy == "whale" else "off"
+    dead_ema = (df["close"].ewm(span=cfg.dead_ema_length, adjust=False).mean()
+                if dead_mode == "ema_cut" else None)
 
     def blended(runner_exit: float) -> float:
         """Synthetic exit price combining the scaled half and the runner half."""
@@ -180,6 +185,14 @@ def simulate_exit(cfg: Config, df: pd.DataFrame, entry_idx: int, entry_price: fl
                     scale_price = target  # bank half, runner continues at breakeven stop
                 else:
                     return i, target, "win"
+            elif dead_mode == "ema_cut" and close < float(dead_ema.iloc[i]):
+                # momentum dead: the entry thesis was price above its EMA
+                return i, close, "dead"
+            elif (dead_mode == "stagnation"
+                    and elapsed_min >= cfg.stagnation_hours * 60
+                    and (peak - entry_price) / entry_price * 100 < cfg.stagnation_min_peak_pct):
+                # never even touched +X% in H hours: the thrust failed
+                return i, close, "dead"
         # 4) max-hold timeout at the close
         if elapsed_min >= max_hold_min:
             return i, close, "timeout"
@@ -667,6 +680,52 @@ def run_exit_mode_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
     print("\n(net_exp = avg net P&L/trade after costs; adopt ema_ride only if it beats roi OOS)")
 
 
+def run_dead_exit_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
+                        regime: Optional[pd.Series], holdout: int = 0) -> None:
+    """Momentum-death exit sweep: baseline (off) vs ema_cut (EMA 9/20) vs
+    stagnation (2/3/4h x +1/+2% peak) on whale trades, entries fixed at the live
+    config. 'dead' column = how often the rule fired and its avg gross P&L there.
+    Adoption: turn a mode on live only if it beats OFF on net expectancy on the
+    HOLDOUT — GIGGLE is n=1; a rule that cuts future winners must not ship."""
+    configs: list[tuple[str, Config]] = [("off (baseline)", replace(cfg, whale_dead_exit_mode="off"))]
+    for length in (9, 20):
+        configs.append((f"ema_cut n={length}",
+                        replace(cfg, whale_dead_exit_mode="ema_cut", dead_ema_length=length)))
+    for hours in (2.0, 3.0, 4.0):
+        for peak in (1.0, 2.0):
+            configs.append((f"stagnation {hours:.0f}h<+{peak:.0f}%",
+                            replace(cfg, whale_dead_exit_mode="stagnation",
+                                    stagnation_hours=hours, stagnation_min_peak_pct=peak)))
+
+    def evaluate(c: Config, segment: str) -> list[SimTrade]:
+        trades: list[SimTrade] = []
+        for sym, df in histories.items():
+            s, e = _segment_bounds(len(df), holdout, segment)
+            trades.extend(simulate_coin(c, sym, df, regime, strategies="whale",
+                                        scan_start=s, scan_end=e))
+        return trades
+
+    def dead_stats(trades: list[SimTrade]) -> str:
+        dead = [t for t in trades if t.outcome == "dead"]
+        if not dead:
+            return "-"
+        return f"{len(dead)}x {statistics.mean(t.pnl_pct for t in dead):+.1f}%"
+
+    seg = "train" if holdout else "all"
+    print(f"\n{'config':18} {'trades':>6} {'win%':>5} {'avgW':>6} {'maxW':>7} {'net_exp':>8}  {'dead':>12}")
+    for label, c in configs:
+        trades = evaluate(c, seg)
+        m = _exit_metrics(trades)
+        print(f"{label:18} {m[0]:>6} {m[1]:>4.0f}% {m[2]:>+5.1f}% {m[3]:>+6.1f}% {m[4]:>+7.2f}%  {dead_stats(trades):>12}")
+    if holdout:
+        print(f"\n--- OUT-OF-SAMPLE (last {holdout // _CANDLES_PER_DAY} days, never ranked) ---")
+        for label, c in configs:
+            trades = evaluate(c, "test")
+            m = _exit_metrics(trades)
+            print(f"  {label:18} {m[0]:>4}tr {m[1]:>3.0f}%w  net {m[4]:+.2f}%  dead {dead_stats(trades)}")
+    print("\n(net_exp = avg net P&L/trade after costs; adopt a mode only if it beats OFF out-of-sample)")
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser(description="Replay history through the live logic")
     ap.add_argument("--days", type=int, default=21)
@@ -675,7 +734,8 @@ async def main() -> None:
                     help="skip the top-N market-cap coins (test mid/small caps, "
                          "where the live bot actually finds whales)")
     ap.add_argument("--strategy", choices=["both", "whale", "spot"], default="both")
-    ap.add_argument("--sweep", choices=["whale", "spot", "whale-exits", "whale-exit-mode"], default=None,
+    ap.add_argument("--sweep", choices=["whale", "spot", "whale-exits", "whale-exit-mode",
+                                        "whale-dead-exit"], default=None,
                     help="grid-search parameters for one strategy instead of a single run")
     ap.add_argument("--min-volume", type=float, default=0,
                     help="only test coins with at least this much 24h USD volume "
@@ -726,6 +786,9 @@ async def main() -> None:
         return
     if args.sweep == "whale-exit-mode":
         run_exit_mode_sweep(cfg, histories, regime, holdout=holdout)
+        return
+    if args.sweep == "whale-dead-exit":
+        run_dead_exit_sweep(cfg, histories, regime, holdout=holdout)
         return
 
     trades: list[SimTrade] = []
