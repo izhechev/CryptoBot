@@ -136,6 +136,15 @@ class Config:
     # it out-of-sample. Read by backtest.simulate_exit only (live unchanged).
     whale_exit_mode: str = "roi"
     ema_ride_length: int = 9   # EMA period (in 15m candles) the runner rides
+    # Momentum-death exit (BACKTEST EXPERIMENT): cut a whale trade that never got
+    # going instead of bleeding to the 12h timeout (GIGGLE: -2.75% over 12h in the
+    # dead zone between the stop and any target). Applies only BEFORE the trade
+    # arms or scales; the stop/trail/ROI/timeout all stay. "off" until a sweep
+    # winner beats baseline on the holdout. Read by backtest.simulate_exit only.
+    whale_dead_exit_mode: str = "off"   # off | ema_cut | stagnation
+    dead_ema_length: int = 20           # ema_cut: exit on a 15m close below EMA-N
+    stagnation_hours: float = 3.0       # stagnation: give the thrust this long...
+    stagnation_min_peak_pct: float = 2.0  # ...to touch +X%, else cut at market
 
 
 def _parse_roi(raw: dict | None, default_pct: float) -> list:
@@ -207,6 +216,10 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         atr_period=int(exits.get("atr_period", 14)),
         whale_exit_mode=str(exits.get("whale_exit_mode", "roi")),
         ema_ride_length=int(exits.get("ema_ride_length", 9)),
+        whale_dead_exit_mode=str(exits.get("whale_dead_exit_mode", "off")),
+        dead_ema_length=int(exits.get("dead_ema_length", 20)),
+        stagnation_hours=float(exits.get("stagnation_hours", 3.0)),
+        stagnation_min_peak_pct=float(exits.get("stagnation_min_peak_pct", 2.0)),
         atr_stop_multiplier=float(exits.get("atr_stop_multiplier", 2.0)),
         stop_pct_min=float(exits.get("stop_pct_min", 4.0)),
         stop_pct_max=float(exits.get("stop_pct_max", 10.0)),
