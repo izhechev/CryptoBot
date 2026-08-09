@@ -3,17 +3,20 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import Optional
 from backend.config import Config
 from backend.storage import Storage, PendingOrder
 from backend.cmc_client import CmcClient, CoinListing
 from backend.market_data import MarketData
-from backend.indicators import compute_indicators, atr_pct
+from backend.indicators import compute_indicators
 from backend.scoring import compute_total_score
 from backend.news import NewsClient
 from backend.signals import SignalEngine
 from backend.paper_trading import PaperTrading
 from backend.whale_strategy import detect_whale
+from backend.entry_log import log_entry
+from backend.fear_greed import scaled_exits
 from backend.notify import Notifier
 from backend.format_utils import fmt_price
 from backend.gecko import GeckoClient
@@ -39,7 +42,7 @@ class _CoinResult:
 
 
 class Scanner:
-    def __init__(self, cfg: Config, db: Storage):
+    def __init__(self, cfg: Config, db: Storage, entry_log_path: str = "entry_log.md"):
         self._cfg = cfg
         self._db = db
         self._cmc = CmcClient(cfg.cmc_api_key)
@@ -51,6 +54,7 @@ class Scanner:
         self._notifier: Notifier | None = None
         self._regime_bullish = True  # set per-scan by the market-regime check
         self._liquid_coins: list[CoinListing] = []  # whale fast-lane universe
+        self._entry_log_path = Path(entry_log_path)
 
     def set_notifier(self, notifier: Notifier) -> None:
         self._notifier = notifier
@@ -90,7 +94,8 @@ class Scanner:
         self._regime_bullish = await self._market_regime_ok()
         MARKET_STATE.regime_bullish = self._regime_bullish
         if self._regime_bullish:
-            MARKET_STATE.whales_blocked = 0  # count is per bear stretch
+            MARKET_STATE.whales_blocked = 0  # counts are per bear stretch
+            MARKET_STATE.spot_blocked = 0
 
     async def _market_regime_ok(self) -> bool:
         """Don't open new longs into a falling market: require BTC above its 4h EMA-50.
@@ -104,8 +109,9 @@ class Scanner:
         ok = bool(df["close"].iloc[-1] > ema)
         if not ok:
             logger.info(
-                "Market regime: BTC below 4h EMA-50 — spot needs score >=%.0f; whales %s",
-                self._cfg.bear_signal_threshold,
+                "Market regime: BTC below 4h EMA-50 — spot %s; whales %s",
+                "bypass (still trade)" if self._cfg.spot_bypass_regime
+                else "BLOCKED until BTC reclaims its 4h trend",
                 "bypass (still trade)" if self._cfg.whale_bypass_regime
                 else "BLOCKED until BTC reclaims its 4h trend",
             )
@@ -154,21 +160,6 @@ class Scanner:
             return False
         return True
 
-    def _spot_threshold(self) -> float:
-        """Fire threshold for spot: normal in a bullish regime, exceptional-only
-        while BTC is below its 4h trend (a bar, not a closed door)."""
-        return self._cfg.signal_threshold if self._regime_bullish else self._cfg.bear_signal_threshold
-
-    def _exit_levels(self, df) -> tuple[Optional[float], Optional[float]]:
-        """Volatility-scaled (stop_pct, trail_pct) for THIS coin, from its ATR at
-        entry — clamped so a wild micro-cap isn't noise-stopped and a calm coin
-        isn't given a barn-door stop. None -> config defaults apply."""
-        a = atr_pct(df, self._cfg.atr_period)
-        if a is None:
-            return None, None
-        stop = min(max(a * self._cfg.atr_stop_multiplier, self._cfg.stop_pct_min), self._cfg.stop_pct_max)
-        trail = min(max(a * self._cfg.atr_trail_multiplier, self._cfg.trail_pct_min), self._cfg.trail_pct_max)
-        return round(stop, 2), round(trail, 2)
 
     def _log_scan_summary(self, results: list[_CoinResult]) -> None:
         """One INFO summary per scan: counts + closest-to-firing coins. This is the
@@ -184,9 +175,11 @@ class Scanner:
 
         logger.info(
             "Scan summary: %d processed | %d skipped (no candles) | %d passed "
-            "pre-filter (tech>=%.0f) | %d standard + %d whale signals fired",
+            "pre-filter (tech>=%.0f) | %d standard + %d whale signals fired%s",
             len(results), no_candles, len(scored),
             self._cfg.pre_filter_threshold, fired, whale_fired,
+            f" | {MARKET_STATE.spot_blocked} spot blocked (bear regime)"
+            if not self._regime_bullish and MARKET_STATE.spot_blocked else "",
         )
 
         ranked = sorted(
@@ -223,6 +216,15 @@ class Scanner:
         # --- Standard strategy: indicators + higher-timeframe confluence ---
         if not self._cfg.spot_enabled:
             return result  # benched: no measured net-positive spot config yet
+        # Spot obeys the BTC regime like whale does (2026-08-01): live data showed
+        # bear-regime entries losing on average even past a raised score bar, and
+        # the score itself doesn't predict outcome — so a higher bar wasn't the
+        # fix. Gate here, before the HTF fetch/indicator compute, to skip the
+        # network+CPU cost too, not just the entry.
+        if not self._regime_bullish and not self._cfg.spot_bypass_regime:
+            MARKET_STATE.spot_blocked += 1
+            logger.debug("  %s: bear regime (BTC below 4h EMA-50) — spot skipped", coin.symbol)
+            return result
         df_htf = await self._market.fetch_htf_candles(coin.symbol)
         ind_scores = compute_indicators(df, self._cfg, df_htf=df_htf)
         result.technical_score = ind_scores.total
@@ -239,8 +241,7 @@ class Scanner:
 
         # Only spend a grounded news call on coins that would fire on technicals AND that
         # we can open — keeps Gemini to a few candidates per scan (free-tier safe).
-        # In a bear regime spot isn't blocked, it needs an exceptional score + budget.
-        if ind_scores.total < self._spot_threshold():
+        if ind_scores.total < self._cfg.signal_threshold:
             return result
         if not self._can_open() or self._in_cooldown(coin.symbol):
             return result
@@ -261,7 +262,7 @@ class Scanner:
             total_score, catalyst.reason,
         )
 
-        if total_score < self._spot_threshold():
+        if total_score < self._cfg.signal_threshold:
             return result  # bearish news vetoed it
         if catalyst.catalyst == "migration":
             logger.debug("  %s: migration risk — skipped", coin.symbol)
@@ -283,12 +284,28 @@ class Scanner:
         if event is None:
             return result
 
-        stop_pct, trail_pct = self._exit_levels(df)
+        # Fixed TP/SL (cfg.take_profit_pct / stop_loss_pct), Fear & Greed-scaled: no
+        # per-coin ATR scaling or trailing — a flat target/stop for every trade,
+        # multiplied by the current market-sentiment factor (2026-07-29).
+        tp_pct, sl_pct, fg_value, fg_label = await scaled_exits(
+            self._cfg, self._cfg.take_profit_pct, self._cfg.stop_loss_pct)
         self._trader.open_position(event, entry_price,
                                    self._market.exchange_id_for(coin.symbol),
-                                   stop_pct=stop_pct, trail_pct=trail_pct)
+                                   stop_pct=sl_pct, take_profit_pct=tp_pct)
         result.fired = True
-        logger.info("Signal: %s score=%.1f entry=%s", coin.symbol, total_score, fmt_price(entry_price))
+        log_entry(
+            "spot", coin.symbol, entry_price,
+            rsi=ind_scores.rsi_value, macd_histogram=ind_scores.macd_histogram,
+            ema_uptrend=ind_scores.htf_uptrend, volume_score=ind_scores.volume_score,
+            divergence=ind_scores.divergence_score > 0, total_score=total_score,
+            news_sentiment=catalyst.sentiment, news_reason=catalyst.reason,
+            regime_bullish=self._regime_bullish, path=self._entry_log_path,
+            fear_greed_value=fg_value, fear_greed_label=fg_label,
+            tp_pct=tp_pct, sl_pct=sl_pct,
+        )
+        logger.info("Signal: %s score=%.1f entry=%s tp=%.1f%% sl=%.1f%% (F&G %d %s)",
+                    coin.symbol, total_score, fmt_price(entry_price), tp_pct, sl_pct,
+                    fg_value, fg_label)
         if self._notifier:
             await self._notifier.send_signal_alert(event, entry_price)
         return result
@@ -384,14 +401,12 @@ class Scanner:
             # tracker fill it only if price pulls back (sweep: the one green config).
             if self._db.has_pending_order(coin.symbol) or whale.thrust_close <= 0:
                 return False
-            stop_pct, trail_pct = self._exit_levels(df)
             now = datetime.now(timezone.utc)
             self._db.save_pending_order(PendingOrder(
                 id=None, coin_symbol=coin.symbol, coin_name=coin.name,
                 limit_price=whale.thrust_close, created_at=now,
                 expires_at=now + timedelta(minutes=15 * self._cfg.whale_retest_wait_candles),
                 exchange=self._market.exchange_id_for(coin.symbol),
-                stop_pct=stop_pct, trail_pct=trail_pct,
                 volume_ratio=whale.volume_ratio, thrust_pct=whale.price_thrust_pct,
             ))
             logger.info("Whale retest armed: %s limit=%s (vol=%.1fx thrust=+%.1f%%)",
@@ -407,12 +422,30 @@ class Scanner:
         )
         if event is None:
             return False
-        stop_pct, trail_pct = self._exit_levels(df)
+        # Fixed TP/SL, Fear & Greed-scaled (see the standard-strategy entry above).
+        tp_pct, sl_pct, fg_value, fg_label = await scaled_exits(
+            self._cfg, self._cfg.whale_take_profit_pct, self._cfg.whale_stop_loss_pct)
         self._trader.open_position(event, entry_price,
                                    self._market.exchange_id_for(coin.symbol),
-                                   stop_pct=stop_pct, trail_pct=trail_pct)
-        logger.info("Whale: %s vol=%.1fx thrust=+%.1f%% entry=%s",
-                    coin.symbol, whale.volume_ratio, whale.price_thrust_pct, fmt_price(entry_price))
+                                   stop_pct=sl_pct, take_profit_pct=tp_pct)
+        # Indicators aren't part of the whale decision — computed here purely so
+        # the entry log has RSI/MACD alongside every fired position, not just spot's.
+        df_htf = await self._market.fetch_htf_candles(coin.symbol)
+        ind_scores = compute_indicators(df, self._cfg, df_htf=df_htf)
+        log_entry(
+            "whale", coin.symbol, entry_price,
+            rsi=ind_scores.rsi_value, macd_histogram=ind_scores.macd_histogram,
+            ema_uptrend=ind_scores.htf_uptrend, volume_score=ind_scores.volume_score,
+            divergence=ind_scores.divergence_score > 0,
+            volume_ratio=whale.volume_ratio, thrust_pct=whale.price_thrust_pct,
+            news_sentiment=catalyst.sentiment, news_reason=catalyst.reason,
+            regime_bullish=self._regime_bullish, path=self._entry_log_path,
+            fear_greed_value=fg_value, fear_greed_label=fg_label,
+            tp_pct=tp_pct, sl_pct=sl_pct,
+        )
+        logger.info("Whale: %s vol=%.1fx thrust=+%.1f%% entry=%s tp=%.1f%% sl=%.1f%% (F&G %d %s)",
+                    coin.symbol, whale.volume_ratio, whale.price_thrust_pct, fmt_price(entry_price),
+                    tp_pct, sl_pct, fg_value, fg_label)
         if self._notifier:
             await self._notifier.send_signal_alert(event, entry_price)
         return True

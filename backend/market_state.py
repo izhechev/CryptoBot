@@ -9,6 +9,7 @@ class MarketState:
     One process, one scanner — a module singleton, like SCAN_CLOCK."""
     regime_bullish: Optional[bool] = None  # None until the first check completes
     whales_blocked: int = 0                # whale spikes skipped in the current bear stretch
+    spot_blocked: int = 0                  # spot signals skipped in the current bear stretch
 
 
 MARKET_STATE = MarketState()

@@ -35,9 +35,18 @@ class Tracker:
         if not positions and not pendings:
             return
 
+        # Reference prices let the lookup rescue coins the two data providers name
+        # differently (see gecko._corroborated). Use the last price we actually
+        # saw, else entry: walking the reference forward keeps the tolerance
+        # covering one cycle's move instead of the whole trade, so a position that
+        # runs a long way doesn't lose its feed exactly when it moves.
+        refs = {p.coin_symbol: (self._db.last_tick_price(p.id) or p.entry_price)
+                for p in positions}
+        refs.update({po.coin_symbol: po.limit_price for po in pendings})
         prices = await self._gecko.fetch_prices(
             [(p.coin_symbol, p.coin_name) for p in positions]
-            + [(po.coin_symbol, po.coin_name) for po in pendings]
+            + [(po.coin_symbol, po.coin_name) for po in pendings],
+            refs=refs, max_div_pct=self._cfg.max_price_divergence_pct,
         )
 
         await self._process_pendings(pendings, prices)

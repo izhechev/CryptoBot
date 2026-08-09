@@ -1,5 +1,6 @@
 "use client";
-import { Position } from "@/lib/types";
+import { Position, IconMap } from "@/lib/types";
+import { CoinIcon } from "@/components/CoinIcon";
 
 function fmtPrice(p: number | null) {
   if (p == null) return "—";
@@ -8,13 +9,13 @@ function fmtPrice(p: number | null) {
 }
 
 const OUTCOME_STYLE: Record<string, { fg: string; bg: string }> = {
-  win: { fg: "var(--green)", bg: "rgba(61,220,132,0.1)" },
-  loss: { fg: "var(--red)", bg: "rgba(255,91,91,0.1)" },
-  timeout: { fg: "var(--amber)", bg: "rgba(255,182,39,0.1)" },
-  dead: { fg: "var(--muted)", bg: "rgba(148,163,184,0.1)" },
+  win: { fg: "var(--green)", bg: "rgba(214,40,40,0.1)" },
+  loss: { fg: "var(--red)", bg: "rgba(122,58,58,0.1)" },
+  timeout: { fg: "var(--amber)", bg: "rgba(181,64,31,0.1)" },
+  dead: { fg: "var(--muted)", bg: "rgba(138,115,115,0.1)" },
 };
 
-export function TradesTable({ positions }: { positions: Position[] }) {
+export function TradesTable({ positions, icons }: { positions: Position[]; icons: IconMap }) {
   return (
     <div className="overflow-x-auto border border-[var(--border)]">
       <table className="w-full text-[12px] tnum">
@@ -37,7 +38,10 @@ export function TradesTable({ positions }: { positions: Position[] }) {
               <tr key={p.id} className="border-t border-[var(--border)] hover:bg-[var(--panel-2)]/60">
                 <td className="px-3 py-2 font-bold font-display"
                     style={{ color: whale ? "var(--amber)" : "var(--text)" }}>
-                  {p.coin_symbol}
+                  <span className="flex items-center gap-1.5">
+                    <CoinIcon url={icons[p.coin_symbol]} size={14} />
+                    {p.coin_symbol}
+                  </span>
                 </td>
                 <td className="px-3 py-2 text-[var(--muted)]">{whale ? "🐋" : "·"}</td>
                 <td className="px-3 py-2 text-[var(--muted)]">${fmtPrice(p.entry_price)}</td>

@@ -7,6 +7,20 @@ function fmtCountdown(sec: number) {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
+function fgColor(label: string) {
+  if (label.includes("Greed")) return "var(--green)";  // bright red in this theme
+  if (label.includes("Fear")) return "var(--red)";     // dim/muted red in this theme
+  return "var(--muted)";
+}
+
+function fgEmoji(label: string) {
+  if (label === "Extreme Greed") return "🔥";
+  if (label === "Greed") return "📈";
+  if (label === "Extreme Fear") return "🥶";
+  if (label === "Fear") return "📉";
+  return "⚖️";
+}
+
 function WinRate({ label, rate, closed, accent }: {
   label: string; rate: number; closed: number; accent: string;
 }) {
@@ -68,6 +82,14 @@ export function StatBar({ stats, connected, nextScanIn }: {
           )}
           {stats.regime_bullish === true && (
             <span className="text-[11px]" style={{ color: "var(--green)" }}>🐂 BULL regime</span>
+          )}
+          {stats.fear_greed_value != null && (
+            <span className="text-[11px] tnum" style={{ color: fgColor(stats.fear_greed_label) }}>
+              {fgEmoji(stats.fear_greed_label)} {stats.fear_greed_value} {stats.fear_greed_label}
+              {!stats.fear_greed_enabled && (
+                <span className="text-[var(--faint)]"> (not scaling TP/SL)</span>
+              )}
+            </span>
           )}
         </div>
       </div>

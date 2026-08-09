@@ -4,14 +4,19 @@ import { StatBar } from "@/components/StatBar";
 import { PositionCard } from "@/components/PositionCard";
 import { TradesTable } from "@/components/TradesTable";
 import { ConfigDrawer } from "@/components/ConfigDrawer";
+import { CoinIcon } from "@/components/CoinIcon";
 import { useCryptoBotWs } from "@/lib/useWebSocket";
-import { Position, PendingOrder, Stats, BotConfig, LiveUpdate } from "@/lib/types";
+import { Position, PendingOrder, Stats, BotConfig, LiveUpdate, IconMap } from "@/lib/types";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const WS = API.replace(/^http/, "ws") + "/ws";
 
 const EMPTY_STRAT = { total_closed: 0, wins: 0, losses: 0, win_rate: 0, open_positions: 0, signals_today: 0, avg_pnl_pct: 0 };
-const EMPTY_STATS: Stats = { overall: EMPTY_STRAT, standard: EMPTY_STRAT, whale: EMPTY_STRAT, next_scan_in: null, regime_bullish: null, whales_blocked: 0 };
+const EMPTY_STATS: Stats = {
+  overall: EMPTY_STRAT, standard: EMPTY_STRAT, whale: EMPTY_STRAT, next_scan_in: null,
+  regime_bullish: null, whales_blocked: 0,
+  fear_greed_value: 50, fear_greed_label: "Neutral", fear_greed_enabled: false,
+};
 
 export default function Dashboard() {
   const [positions, setPositions] = useState<Position[]>([]);
@@ -20,18 +25,21 @@ export default function Dashboard() {
   const [config, setConfig] = useState<BotConfig | null>(null);
   const [live, setLive] = useState<LiveUpdate>({});
   const [nextScanIn, setNextScanIn] = useState(0);
+  const [icons, setIcons] = useState<IconMap>({});
 
   const { messages, connected } = useCryptoBotWs(WS);
 
   const refresh = useCallback(async () => {
     try {
-      const [p, pend, st, cfg] = await Promise.all([
+      const [p, pend, st, cfg, ic] = await Promise.all([
         fetch(`${API}/positions`).then((r) => r.json()),
         fetch(`${API}/pending`).then((r) => r.json()),
         fetch(`${API}/stats`).then((r) => r.json()),
         fetch(`${API}/config`).then((r) => r.json()),
+        fetch(`${API}/icons`).then((r) => r.json()),
       ]);
       setPositions(p); setPending(pend); setStats(st); setConfig(cfg);
+      setIcons((prev) => ({ ...prev, ...ic }));  // backend caches too; just merge in
       // Anchor the countdown to the backend's clock (re-syncs every poll + on reload).
       if (typeof st.next_scan_in === "number") setNextScanIn(st.next_scan_in);
     } catch {
@@ -105,8 +113,9 @@ export default function Dashboard() {
           <div className="mt-2 flex flex-wrap gap-2">
             {pending.map((o) => (
               <div key={o.id}
-                   className="border border-dashed bg-[var(--panel)] px-3 py-2 text-[11px] tnum"
+                   className="flex items-center gap-1.5 border border-dashed bg-[var(--panel)] px-3 py-2 text-[11px] tnum"
                    style={{ borderColor: "var(--amber)" }}>
+                <CoinIcon url={icons[o.coin_symbol]} />
                 <span className="font-display font-bold text-[var(--text)]">{o.coin_symbol}</span>
                 {o.coin_name && o.coin_name.toLowerCase() !== o.coin_symbol.toLowerCase() && (
                   <span className="text-[var(--muted)]"> {o.coin_name}</span>
@@ -124,11 +133,11 @@ export default function Dashboard() {
         <PanelHeader label="Open Positions" count={openPositions.length} accent="var(--amber)" />
         <div className="overflow-y-auto p-3 flex flex-col gap-2 max-h-[62vh]">
           {openWhales.length > 0 && <GroupLabel text="🐋 Whale rides" accent="var(--amber)" />}
-          {openWhales.map((p) => <PositionCard key={p.id} position={p} live={live} />)}
+          {openWhales.map((p) => <PositionCard key={p.id} position={p} live={live} icons={icons} />)}
           {openStd.length > 0 && openWhales.length > 0 && (
             <GroupLabel text="Standard" accent="var(--green)" />
           )}
-          {openStd.map((p) => <PositionCard key={p.id} position={p} live={live} />)}
+          {openStd.map((p) => <PositionCard key={p.id} position={p} live={live} icons={icons} />)}
           {openPositions.length === 0 && <Empty text="No open positions." />}
         </div>
       </section>
@@ -136,7 +145,7 @@ export default function Dashboard() {
       {/* Closed trades */}
       <section className="p-3 border-t border-[var(--border)]">
         <PanelHeader label="Closed Trades" count={closedPositions.length} accent="var(--text)" inline />
-        <div className="mt-2"><TradesTable positions={closedPositions} /></div>
+        <div className="mt-2"><TradesTable positions={closedPositions} icons={icons} /></div>
       </section>
     </div>
   );

@@ -14,6 +14,8 @@ class IndicatorScores:
     divergence_score: float
     htf_uptrend: bool
     total: float
+    rsi_value: Optional[float] = None       # raw RSI(14) reading, for entry logging/analysis
+    macd_histogram: Optional[float] = None  # raw MACD histogram value, for entry logging/analysis
 
 
 _MIN_CANDLES = 50
@@ -130,11 +132,13 @@ def compute_indicators(
 
     # --- RSI, uptrend-aware (do NOT penalize high RSI in a confirmed uptrend) ---
     rsi_score = 0.0
+    rsi_value: Optional[float] = None
     rsi_series = ta.rsi(close, length=14)
     if rsi_series is not None and len(rsi_series) >= 2:
         rsi = rsi_series.iloc[-1]
         prev_rsi = rsi_series.iloc[-2]
         if not pd.isna(rsi) and not pd.isna(prev_rsi):
+            rsi_value = float(rsi)
             in_uptrend = htf_uptrend or ltf_uptrend
             if in_uptrend:
                 # Best entry: RSI turning up out of a pullback (40-55 zone rising).
@@ -172,6 +176,10 @@ def compute_indicators(
 
     total = min(100.0, total)
 
+    macd_histogram: Optional[float] = None
+    if histogram is not None and len(histogram) and not pd.isna(histogram.iloc[-1]):
+        macd_histogram = float(histogram.iloc[-1])
+
     return IndicatorScores(
         macd_score=macd_score,
         rsi_score=rsi_score,
@@ -180,4 +188,6 @@ def compute_indicators(
         divergence_score=divergence_score,
         htf_uptrend=htf_uptrend,
         total=total,
+        rsi_value=rsi_value,
+        macd_histogram=macd_histogram,
     )

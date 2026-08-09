@@ -37,6 +37,8 @@ class Position:
     stop_pct: Optional[float] = None    # stop-loss distance for THIS coin's volatility
     trail_pct: Optional[float] = None   # trailing give-back once the trade is armed
     peak_price: Optional[float] = None  # high-water mark while open (trailing reference)
+    # Fear & Greed-scaled take-profit target for THIS trade. None = config default.
+    take_profit_pct: Optional[float] = None
     scale_price: Optional[float] = None  # price where half was banked (scale-out); the
                                          # rest runs with a breakeven floor + trail
 
@@ -106,7 +108,7 @@ def _position_from_row(r) -> Position:
         outcome=r["outcome"], pnl_pct=r["pnl_pct"], strategy=r["strategy"],
         exchange=r["exchange"], coin_name=(r["coin_name"] or ""),
         stop_pct=r["stop_pct"], trail_pct=r["trail_pct"], peak_price=r["peak_price"],
-        scale_price=r["scale_price"],
+        scale_price=r["scale_price"], take_profit_pct=r["take_profit_pct"],
     )
 
 
@@ -149,7 +151,8 @@ class Storage:
                     stop_pct REAL,
                     trail_pct REAL,
                     peak_price REAL,
-                    scale_price REAL
+                    scale_price REAL,
+                    take_profit_pct REAL
                 );
                 CREATE TABLE IF NOT EXISTS price_ticks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -184,7 +187,8 @@ class Storage:
             cols = [r[1] for r in conn.execute("PRAGMA table_info(positions)").fetchall()]
             for col, ddl in (("exchange", "TEXT"), ("coin_name", "TEXT"),
                              ("stop_pct", "REAL"), ("trail_pct", "REAL"),
-                             ("peak_price", "REAL"), ("scale_price", "REAL")):
+                             ("peak_price", "REAL"), ("scale_price", "REAL"),
+                             ("take_profit_pct", "REAL")):
                 if col not in cols:
                     conn.execute(f"ALTER TABLE positions ADD COLUMN {col} {ddl}")
 
@@ -215,12 +219,12 @@ class Storage:
             cur = conn.execute(
                 "INSERT INTO positions (signal_id, coin_symbol, entry_price, entry_at, "
                 "exit_price, exit_at, outcome, pnl_pct, strategy, exchange, coin_name, "
-                "stop_pct, trail_pct, peak_price, scale_price) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "stop_pct, trail_pct, peak_price, scale_price, take_profit_pct) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (pos.signal_id, pos.coin_symbol, pos.entry_price, _dts(pos.entry_at),
                  pos.exit_price, _dts(pos.exit_at), pos.outcome, pos.pnl_pct, pos.strategy,
                  pos.exchange, pos.coin_name, pos.stop_pct, pos.trail_pct, pos.peak_price,
-                 pos.scale_price),
+                 pos.scale_price, pos.take_profit_pct),
             )
             return Position(**{**pos.__dict__, "id": cur.lastrowid})
 

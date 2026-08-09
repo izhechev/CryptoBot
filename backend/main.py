@@ -9,6 +9,7 @@ from backend.tracker import Tracker
 from backend.notify import Notifier
 from backend.api import create_app
 from backend.report import daily_report_loop
+from backend.position_snapshot import position_snapshot_loop
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,6 +45,7 @@ async def main() -> None:
         scanner.whale_loop(),
         tracker.loop(),
         daily_report_loop(db, notifier, cost_pct=cfg.assumed_cost_pct),
+        position_snapshot_loop(cfg, db),
         server.serve(),
     )
 

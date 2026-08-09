@@ -1,21 +1,22 @@
 @import "tailwindcss";
 
 :root {
-  --bg: #07090a;
-  --panel: #0c1113;
-  --panel-2: #10171a;
-  --border: #1a2528;
-  --border-bright: #25363a;
-  --text: #cdd6d2;
-  --muted: #66756f;
-  --faint: #3a4642;
-  --green: #3ddc84;
-  --green-dim: #1d6b44;
-  --red: #ff5b5b;
-  --red-dim: #6e2626;
-  --amber: #ffb627;
-  --amber-dim: #7a5410;
-  --cyan: #45d0c8;
+  --bg: #f7f2f2;
+  --panel: #ffffff;
+  --panel-2: #fbeeee;
+  --border: #e8caca;
+  --border-bright: #d99a9a;
+  --text: #201818;
+  --muted: #8a6a6a;
+  --faint: #c9a8a8;
+  /* Win/loss stay one hue family (red/white theme): bright red = win, dim = loss. */
+  --green: #d62828;
+  --green-dim: #f4c6c6;
+  --red: #7a3a3a;
+  --red-dim: #ecd8d8;
+  --amber: #b5401f;
+  --amber-dim: #f0d4c4;
+  --cyan: #4a1f1f;
 }
 
 @theme inline {
@@ -32,7 +33,7 @@
 }
 
 html {
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 body {
@@ -41,8 +42,8 @@ body {
   font-family: var(--font-mono), ui-monospace, monospace;
   /* faint terminal grid + corner glow */
   background-image:
-    radial-gradient(900px 500px at 85% -10%, rgba(61, 220, 132, 0.05), transparent 60%),
-    radial-gradient(700px 500px at 10% 110%, rgba(255, 182, 39, 0.04), transparent 55%),
+    radial-gradient(900px 500px at 85% -10%, rgba(214, 40, 40, 0.06), transparent 60%),
+    radial-gradient(700px 500px at 10% 110%, rgba(181, 64, 31, 0.05), transparent 55%),
     linear-gradient(var(--border) 1px, transparent 1px),
     linear-gradient(90deg, var(--border) 1px, transparent 1px);
   background-size: 100% 100%, 100% 100%, 44px 44px, 44px 44px;
@@ -67,12 +68,12 @@ body {
 
 /* Whale flash on new signal */
 @keyframes flash-amber {
-  0% { background-color: rgba(255, 182, 39, 0.16); }
+  0% { background-color: rgba(181, 64, 31, 0.14); }
   100% { background-color: transparent; }
 }
 .flash-amber { animation: flash-amber 1.4s ease-out; }
 @keyframes flash-green {
-  0% { background-color: rgba(61, 220, 132, 0.14); }
+  0% { background-color: rgba(214, 40, 40, 0.12); }
   100% { background-color: transparent; }
 }
 .flash-green { animation: flash-green 1.4s ease-out; }
