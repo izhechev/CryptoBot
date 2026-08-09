@@ -13,16 +13,26 @@ scan:
   htf_candle_limit: 100
 
 scoring:
-  spot_enabled: false            # BENCHED: spot never measured net-positive after realistic
-                                 # costs (mid-caps OR liquid majors); live confirmed (-1.5%/2tr).
-                                 # Re-enable when a spot sweep goes green.
-  pre_filter_threshold: 55       # min technical score before fetching news + calling Gemini
-  signal_threshold: 80           # min total score to fire (SPOT SWEEP: 80 beat 75/70 in
-                                 # every pairing; top combo 70% win, +0.53%/trade net)
+  spot_enabled: true             # 2026-07-29: re-enabled on a fixed +10%/-10% TP/SL (no ATR
+                                 # scaling/decay/scale-out) at the user's request, without new
+                                 # backtest evidence — prior sweeps found every config net-negative
+                                 # after costs (see git log 57e2470). Watch live results closely.
+  # 2026-07-29: lowered from 55/80/85 for a data-collection phase — the goal right
+  # now is entry VOLUME (fill entry_log.md fast enough to read a real win rate),
+  # not signal quality. Raise these back once there's enough data to judge.
+  pre_filter_threshold: 40       # min technical score before fetching news + calling Gemini
+  signal_threshold: 60           # min total score to fire
   max_price_divergence_pct: 8    # reject if exchange price is >8% off CMC's price (stale/wrong coin)
   pumped_skip_pct: 30            # skip a candidate already up this % over 7 days (RIF/DASH pattern)
   news_veto_threshold: 35        # skip a candidate if grounded news sentiment is below this
-  bear_signal_threshold: 85      # spot bar while BTC is below its 4h trend (sweep winner)
+  bypass_regime: false           # 2026-08-01: spot now HARD-blocks entries below BTC's 4h EMA-50,
+                                 # same gate whale already uses (bypass_regime: false there too).
+                                 # Replaces the old "just needs a higher score" bar
+                                 # (bear_signal_threshold) — live data showed bear-regime spot
+                                 # entries averaged -1.46%/38% win vs bull's +2.34%/55%, and the
+                                 # composite score doesn't predict outcome (higher-score buckets
+                                 # underperformed lower ones), so raising the bar further wasn't
+                                 # going to fix it. See cryptobot-spot-strategy-decision memory.
   technical_weight: 0.65
   news_weight: 0.35
   min_volume_24h: 25000          # CMC server-side filter: ~2785 coins (lower = more, thinner coins)
@@ -54,6 +64,16 @@ exits:
   whale_dead_exit_mode: stagnation
   stagnation_hours: 4
   stagnation_min_peak_pct: 2.0
+  # Spot's own stagnation cut — separate knobs from whale's above, sized for
+  # spot's much slower development (live sample: 3 of 5 real winners hadn't
+  # touched +1% by hour 4). 2026-08-01 `--sweep spot-dead-exit` (20 coins, 21d,
+  # 5d holdout): ALL 12 tested configs beat baseline OOS; 8h<+1.5% was the best
+  # (net -1.25%/trade OOS vs baseline -2.53%) without degrading win rate like
+  # the tighter windows did. Note: still net-negative — this cuts the bleeding,
+  # it does not give spot a real edge. Thin OOS sample (15tr) — watch live.
+  standard_dead_exit_mode: stagnation
+  standard_stagnation_hours: 8
+  standard_stagnation_min_peak_pct: 1.5
   atr_stop_multiplier: 2.5      # stop distance = 2.5 x ATR% (sweep: 2.5 beat 1.5 in every
                                 # spot row; whales were indifferent across 1.5-2.5)
   stop_pct_min: 4.0
@@ -61,10 +81,12 @@ exits:
   atr_trail_multiplier: 1.5     # trailing give-back = 1.5 x ATR%
   trail_pct_min: 2.0
   trail_pct_max: 6.0
-  trail_arm_pct: 4.0            # arm the trail once the trade has peaked past this
+  trail_arm_pct: 4.0            # arm the trail once the trade has peaked past this — inert while
+                                # both strategies use fixed TP/SL below (no trail_pct set at entry)
   # SWEEP VERDICT (liquid universe): scale-out beat closing in full by +0.5-1.2%/trade
   # in every real-sample combo — bank half at the first ROI target, trail the rest.
-  scale_out: true
+  # 2026-07-29: off while both strategies run plain fixed TP/SL (no partial banking).
+  scale_out: false
   scale_fraction: 0.5
                                 # (sweep: 4.0 edged 6.0/8.0 at every volume floor)
   # Re-entry cooldowns: don't re-buy the same coin right after a close — with the
@@ -73,17 +95,17 @@ exits:
   reentry_cooldown_hours: 2
 
 paper_trading:
-  take_profit_pct: 10.0
-  stop_loss_pct: 5.0
+  # 2026-08-08 `--sweep spot-tpsl` (79 mid-caps, 30d, 9d holdout, simulating this
+  # fixed-exit path): NO fixed TP/SL gets spot above 50% win rate — the entries
+  # have no edge (every one of 24 combos ~-3.5%/trade net, train AND holdout).
+  # TP 2 was the highest win rate (47%w train, 46%w holdout, vs 31%w for the old
+  # 10/10) and the least-bad net. Chosen per the user's win-rate-first directive;
+  # it does NOT make spot net-positive — the real lever is a higher entry bar
+  # (or spot off). SL near-irrelevant (stagnation/timeout fire first); 7 edged 10.
+  take_profit_pct: 2.0
+  stop_loss_pct: 7.0
   max_hold_hours: 24
   notional_size: 1000.0
-  # Time-decaying take-profit (minutes: target %). Grab the early pop, then accept
-  # progressively less so a fading winner is booked green instead of riding to the stop.
-  roi:
-    0: 10.0       # +10% in the first 30 min
-    30: 5.0       # after 30 min, take +5%
-    120: 3.0      # after 2h, take +3%
-    360: 1.5      # after 6h, take any +1.5%
 
 # How open positions are tracked. Checking the 1m candle HIGH/LOW (not just the
 # last price) catches brief intra-minute spikes that would otherwise be missed —
@@ -138,17 +160,19 @@ whale:
   thrust_lookback: 3            # number of candles for the price-thrust window
   detect_window: 7              # search the last N candles for a spike (hourly scans miss
                                 # mid-hour spikes otherwise); needs >=1 candle of follow-through
-  take_profit_pct: 15.0
-  stop_loss_pct: 7.0
+  # 2026-08-08 `--sweep whale-tpsl` (96 liquid coins, 45d, 12d holdout, simulating
+  # THIS fixed-exit path): TP 8 beat TP 25 on BOTH win rate and net expectancy —
+  # train 49%w/+0.32%/trade vs 43%w/-0.56%; holdout (15tr, rough window, nothing
+  # net-positive) 53%w/-0.79% vs 29%w/-3.03%. With a 12h hold +25% is almost never
+  # touched — trades die by stagnation cut/timeout instead; a nearer target banks
+  # them green. SL 10/15/25 scored identically (stagnation fires first), so 10 is
+  # kept purely as the disaster cap; SL 5 was worse OOS. User accepted a lower
+  # reward:risk in exchange for win rate (2026-08-08). Was 25/25 since 07-29.
+  take_profit_pct: 8.0
+  stop_loss_pct: 10.0
   max_hold_hours: 12
   max_open: 6                   # cap concurrent whale positions — 12 overnight longs
                                 # turned one dip into six stop-outs (one beta bet)
-  # Whales fade fastest — decay the target hard so you bank the thrust early.
-  roi:
-    0: 15.0       # +15% in the first 20 min
-    20: 7.0       # after 20 min, take +7%
-    60: 4.0       # after 1h, take +4%
-    180: 2.0      # after 3h, take any +2%
   # Entry-quality filters — fewer but higher-conviction whale rides:
   ema_period: 20                # only ride a thrust while price is above this EMA (skip downtrend bounces)
   min_candle_volume_usd: 10000  # the spike candle must move >= this much $ (kills dead-coin noise)
@@ -159,3 +183,18 @@ whale:
 # on the >=$10M/day whale universe.
 report:
   assumed_cost_pct: 0.5
+
+# Fear & Greed-scaled TP/SL (alternative.me Crypto Fear & Greed Index, public, no
+# key, cached ~1h): both strategies' fixed TP/SL are multiplied by the factor for
+# the CURRENT sentiment bucket at entry (computed once, stored on the position —
+# doesn't move mid-trade). UNTESTED hypothesis (2026-07-29, user request, enabled
+# without backtest validation): greed tightens (bank profit before a euphoric
+# reversal), fear widens (give a choppy capitulation move room). TP and SL scale
+# by the same factor so each trade's reward:risk ratio is unchanged.
+fear_greed:
+  enabled: true
+  extreme_fear_mult: 1.3
+  fear_mult: 1.15
+  neutral_mult: 1.0
+  greed_mult: 0.85
+  extreme_greed_mult: 0.7

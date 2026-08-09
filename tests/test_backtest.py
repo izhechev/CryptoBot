@@ -116,14 +116,22 @@ def test_simulate_spot_from_scores_fires_and_dedups(cfg):
     assert trades[0].strategy == "standard"
 
 
-def test_simulate_spot_respects_bear_bar(cfg):
+def test_simulate_spot_blocks_bear_regime_even_with_max_score(cfg):
+    """Bear regime is now a hard gate for spot (mirrors whale's), not a raised
+    bar: even a maxed-out score doesn't open while bullish=False."""
     from backend.backtest import simulate_spot_from_scores
     df = candles(_WARMUP + 120)
-    # 78 clears the 75 bull bar but NOT the 85 bear bar (conftest default bear=85?
-    # use cfg value to stay robust)
-    score = (cfg.signal_threshold + cfg.bear_signal_threshold) / 2
-    trades = simulate_spot_from_scores(cfg, "X", df, [(_WARMUP, score, False)])
+    trades = simulate_spot_from_scores(cfg, "X", df, [(_WARMUP, 100.0, False)])
     assert trades == []
+
+
+def test_simulate_spot_bypasses_bear_regime_when_configured(cfg):
+    from dataclasses import replace
+    from backend.backtest import simulate_spot_from_scores
+    df = candles(_WARMUP + 120)
+    c = replace(cfg, spot_bypass_regime=True)
+    trades = simulate_spot_from_scores(c, "X", df, [(_WARMUP, 100.0, False)])
+    assert len(trades) == 1
 
 
 def _spiked_df(n_extra: int = 70):

@@ -63,6 +63,10 @@ class Config:
     max_open_positions: int = 6        # cap correlated concurrent exposure
     regime_filter: bool = True         # skip NEW entries when BTC is below its 4h trend
     whale_bypass_regime: bool = True   # whales (short, self-trend-filtered) trade in any market
+    spot_bypass_regime: bool = False   # spot obeys the BTC regime like whale does (2026-08-01:
+                                       # live data showed bear-regime spot entries lose on
+                                       # average even past a raised score bar — hard block, not
+                                       # a higher bar, see cryptobot-spot-strategy-decision)
     # Pre-trade news/catalyst gate (v2):
     pumped_skip_pct: float = 30.0      # skip a candidate already up this % over 7 days
     news_veto_threshold: float = 35.0  # skip if grounded news sentiment is below this
@@ -71,9 +75,6 @@ class Config:
     # latest candle for one candle-width — a window covers the whole gap between
     # scans. Spikes need >=1 candle of follow-through, so the live candle is skipped.
     whale_detect_window: int = 5
-    # Bear-regime spot rule: when BTC is below its 4h trend, spot entries are not
-    # blocked outright — they just need an exceptional score (quality, not a quota).
-    bear_signal_threshold: float = 80.0   # spot fire threshold while BTC is bearish
     # Spot kill-switch: spot never measured net-positive after realistic costs in
     # any backtest (mid-caps or liquid majors). Benched until a sweep goes green.
     spot_enabled: bool = True
@@ -147,6 +148,27 @@ class Config:
     dead_ema_length: int = 20           # ema_cut: exit on a 15m close below EMA-N
     stagnation_hours: float = 3.0       # stagnation: give the thrust this long...
     stagnation_min_peak_pct: float = 2.0  # ...to touch +X%, else cut at market
+    # Spot's own stagnation knobs — kept separate from whale's above. Whale enters
+    # already mid-thrust so a tight 4h/+2% check is safe; spot's static-score
+    # entries take far longer to prove out (live sample: 3 of 5 real winners
+    # hadn't even touched +1% by hour 4, final gains landed at 12-19% many hours
+    # later). Reusing whale's numbers on spot would cut real winners early — needs
+    # its own sweep (`--sweep spot-dead-exit`) before enabling live.
+    standard_dead_exit_mode: str = "off"        # off | stagnation
+    standard_stagnation_hours: float = 8.0
+    standard_stagnation_min_peak_pct: float = 1.0
+    # Fear & Greed-scaled TP/SL (alternative.me Crypto Fear & Greed Index, cached
+    # ~hourly): each strategy's fixed TP/SL is multiplied by a factor keyed to the
+    # market's current sentiment bucket, computed once at entry. Untested
+    # hypothesis (2026-07-29): greed TIGHTENS (bank profit before a euphoric
+    # reversal), fear WIDENS (give a choppy capitulation move room to work) — both
+    # TP and SL scale by the same factor so the reward:risk ratio is unchanged.
+    fear_greed_enabled: bool = False
+    fear_greed_extreme_fear_mult: float = 1.3
+    fear_greed_fear_mult: float = 1.15
+    fear_greed_neutral_mult: float = 1.0
+    fear_greed_greed_mult: float = 0.85
+    fear_greed_extreme_greed_mult: float = 0.7
 
 
 def _parse_roi(raw: dict | None, default_pct: float) -> list:
@@ -169,6 +191,7 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
     exits = raw.get("exits", {})
     book = raw.get("book", {})
     report = raw.get("report", {})
+    fg = raw.get("fear_greed", {})
 
     return Config(
         scan_interval_minutes=scan["interval_minutes"],
@@ -209,11 +232,11 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         max_open_positions=int(scan.get("max_open_positions", 6)),
         regime_filter=bool(scan.get("regime_filter", True)),
         whale_bypass_regime=bool(whale.get("bypass_regime", True)),
+        spot_bypass_regime=bool(scoring.get("bypass_regime", False)),
         pumped_skip_pct=float(scoring.get("pumped_skip_pct", 30.0)),
         news_veto_threshold=float(scoring.get("news_veto_threshold", 35.0)),
         whale_max_thrust_pct=float(whale.get("max_thrust_pct", 18.0)),
         whale_detect_window=int(whale.get("detect_window", 5)),
-        bear_signal_threshold=float(scoring.get("bear_signal_threshold", 80.0)),
         spot_enabled=bool(scoring.get("spot_enabled", True)),
         atr_period=int(exits.get("atr_period", 14)),
         whale_exit_mode=str(exits.get("whale_exit_mode", "roi")),
@@ -222,6 +245,9 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         dead_ema_length=int(exits.get("dead_ema_length", 20)),
         stagnation_hours=float(exits.get("stagnation_hours", 3.0)),
         stagnation_min_peak_pct=float(exits.get("stagnation_min_peak_pct", 2.0)),
+        standard_dead_exit_mode=str(exits.get("standard_dead_exit_mode", "off")),
+        standard_stagnation_hours=float(exits.get("standard_stagnation_hours", 8.0)),
+        standard_stagnation_min_peak_pct=float(exits.get("standard_stagnation_min_peak_pct", 1.0)),
         atr_stop_multiplier=float(exits.get("atr_stop_multiplier", 2.0)),
         stop_pct_min=float(exits.get("stop_pct_min", 4.0)),
         stop_pct_max=float(exits.get("stop_pct_max", 10.0)),
@@ -253,4 +279,10 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
         gecko_api_key=os.environ.get("COIN_GECKO_API_KEY", ""),
+        fear_greed_enabled=bool(fg.get("enabled", False)),
+        fear_greed_extreme_fear_mult=float(fg.get("extreme_fear_mult", 1.3)),
+        fear_greed_fear_mult=float(fg.get("fear_mult", 1.15)),
+        fear_greed_neutral_mult=float(fg.get("neutral_mult", 1.0)),
+        fear_greed_greed_mult=float(fg.get("greed_mult", 0.85)),
+        fear_greed_extreme_greed_mult=float(fg.get("extreme_greed_mult", 0.7)),
     )

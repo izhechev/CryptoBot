@@ -33,9 +33,9 @@ def db(tmp_path):
 
 
 @pytest.fixture
-def scanner(cfg, db):
+def scanner(cfg, db, tmp_path):
     with patch("backend.scanner.NewsClient"):
-        s = Scanner(cfg, db)
+        s = Scanner(cfg, db, entry_log_path=str(tmp_path / "entry_log.md"))
     s._cmc = AsyncMock()
     s._market = AsyncMock()
     s._market.exchange_id_for = MagicMock(return_value="binance")  # sync method
@@ -76,9 +76,47 @@ async def test_scan_fires_signal_on_high_score_coin(scanner, db):
 
 
 @pytest.mark.asyncio
-async def test_bear_regime_allows_exceptional_spot(scanner, db):
-    """BTC below its 4h trend is a BAR, not a closed door: an exceptional-score
-    coin (>= bear_signal_threshold) still opens."""
+async def test_bear_regime_blocks_spot_even_with_exceptional_score(scanner, db):
+    """BTC below its 4h trend is now a hard door for spot (2026-08-01), same as
+    whale's regime gate: live data showed a raised score bar didn't stop bear-
+    regime spot entries from losing on average, and score doesn't predict
+    outcome anyway — so even a maxed-out score stays blocked."""
+    scanner._market_regime_ok = AsyncMock(return_value=False)
+    scanner._cmc.fetch_all_coins = AsyncMock(return_value=[
+        CoinListing(symbol="SOL", name="Solana", price=150.0, volume_24h=5e9, change_24h=5.0)
+    ])
+    scanner._market.fetch_candles = AsyncMock(return_value=make_candle_df())
+    scanner._market.fetch_htf_candles = AsyncMock(return_value=make_candle_df(100))
+    scanner._market.fetch_current_price = AsyncMock(return_value=150.0)
+    with patch("backend.scanner.compute_indicators",
+               return_value=IndicatorScores(30.0, 20.0, 15.0, 15.0, 20.0, True, 100.0)), \
+         patch("backend.scanner.detect_whale", return_value=None):
+        await scanner.run_once()
+    assert len(db.get_recent_signals()) == 0
+
+
+@pytest.mark.asyncio
+async def test_bear_regime_blocks_ordinary_spot(scanner, db):
+    """Same bear regime, an ordinary good score also stays blocked."""
+    scanner._market_regime_ok = AsyncMock(return_value=False)
+    scanner._cmc.fetch_all_coins = AsyncMock(return_value=[
+        CoinListing(symbol="SOL", name="Solana", price=150.0, volume_24h=5e9, change_24h=5.0)
+    ])
+    scanner._market.fetch_candles = AsyncMock(return_value=make_candle_df())
+    scanner._market.fetch_htf_candles = AsyncMock(return_value=make_candle_df(100))
+    scanner._market.fetch_current_price = AsyncMock(return_value=150.0)
+    with patch("backend.scanner.compute_indicators",
+               return_value=IndicatorScores(30.0, 20.0, 13.0, 15.0, 0.0, True, 78.0)), \
+         patch("backend.scanner.detect_whale", return_value=None):
+        await scanner.run_once()
+    assert len(db.get_recent_signals()) == 0
+
+
+@pytest.mark.asyncio
+async def test_spot_bypasses_bearish_regime_when_configured(scanner, db):
+    """spot_bypass_regime=True restores the old always-trade-on-score behavior,
+    same escape hatch whale already has via whale_bypass_regime."""
+    scanner._cfg.spot_bypass_regime = True
     scanner._market_regime_ok = AsyncMock(return_value=False)
     scanner._cmc.fetch_all_coins = AsyncMock(return_value=[
         CoinListing(symbol="SOL", name="Solana", price=150.0, volume_24h=5e9, change_24h=5.0)
@@ -92,23 +130,6 @@ async def test_bear_regime_allows_exceptional_spot(scanner, db):
         await scanner.run_once()
     signals = db.get_recent_signals()
     assert len(signals) == 1 and signals[0].coin_symbol == "SOL"
-
-
-@pytest.mark.asyncio
-async def test_bear_regime_blocks_ordinary_spot(scanner, db):
-    """Same bear regime, but a merely-good score (>=75, < bear bar) stays blocked."""
-    scanner._market_regime_ok = AsyncMock(return_value=False)
-    scanner._cmc.fetch_all_coins = AsyncMock(return_value=[
-        CoinListing(symbol="SOL", name="Solana", price=150.0, volume_24h=5e9, change_24h=5.0)
-    ])
-    scanner._market.fetch_candles = AsyncMock(return_value=make_candle_df())
-    scanner._market.fetch_htf_candles = AsyncMock(return_value=make_candle_df(100))
-    scanner._market.fetch_current_price = AsyncMock(return_value=150.0)
-    with patch("backend.scanner.compute_indicators",
-               return_value=IndicatorScores(30.0, 20.0, 13.0, 15.0, 0.0, True, 78.0)), \
-         patch("backend.scanner.detect_whale", return_value=None):
-        await scanner.run_once()
-    assert len(db.get_recent_signals()) == 0
 
 
 @pytest.mark.asyncio

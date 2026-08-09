@@ -168,6 +168,27 @@ async def test_atr_stop_uses_position_specific_pct(tracker, db):
 
 
 @pytest.mark.asyncio
+async def test_take_profit_pct_override_wins(tracker, db):
+    """A Fear & Greed-scaled per-position TP (here 8%, tighter than the fixed
+    config default of 10%) must fire at +8%, not wait for the config value."""
+    pos = db.save_position(Position(
+        id=None,
+        signal_id=db.save_signal(Signal(
+            id=None, coin_symbol="GRD", coin_name="GRD", total_score=100.0,
+            technical_score=100.0, news_score=50.0, gemini_explanation="g",
+            fired_at=datetime.now(timezone.utc), strategy="standard",
+        )).id,
+        coin_symbol="GRD", entry_price=100.0, entry_at=datetime.now(timezone.utc),
+        exit_price=None, exit_at=None, outcome=None, pnl_pct=None,
+        strategy="standard", take_profit_pct=8.0,
+    ))
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"GRD": 108.5})  # +8.5%
+    await tracker.run_once()
+    closed = db.get_all_positions(limit=10)
+    assert closed[0].outcome == "win"
+
+
+@pytest.mark.asyncio
 async def test_trailing_lets_runner_run_past_roi(tracker, db):
     """+20% after 2h: decaying ROI rung (+4%) would have booked it long ago, but the
     trail — armed by an EARLIER tick's peak, like the backtester's prior-candle
@@ -323,3 +344,34 @@ async def test_retest_fill_cancelled_at_whale_cap(tracker, db):
     await tracker.run_once()
     assert not db.has_open_position("RTS", strategy="whale")
     assert db.get_pending_orders() == []  # cancelled, not left working
+
+
+@pytest.mark.asyncio
+async def test_passes_reference_price_so_renamed_coins_can_resolve(tracker, db):
+    """CMC and CoinGecko name the same coin differently (CMC 'Defi App' vs
+    CoinGecko 'HOME'). Without a price to corroborate identity the lookup returns
+    nothing and the position gets no feed at all — it cannot hit TP/SL and books
+    a fake break-even at the timeout. Six live positions sat frozen this way."""
+    make_open_position(db, "HOME", 0.00982)
+    tracker._gecko.fetch_prices = AsyncMock(return_value={})
+
+    await tracker.run_once()
+
+    kwargs = tracker._gecko.fetch_prices.call_args.kwargs
+    assert kwargs["refs"]["HOME"] == 0.00982
+    assert kwargs["max_div_pct"] > 0
+
+
+@pytest.mark.asyncio
+async def test_reference_price_follows_the_last_seen_tick(tracker, db):
+    """The reference walks forward with the coin, so the tolerance only has to
+    cover one cycle's move rather than the whole trade — otherwise a position
+    that legitimately ran past the band would freeze exactly when it moved."""
+    pos = make_open_position(db, "HOME", 0.00982)
+    db.save_price_tick(PriceTick(id=None, position_id=pos.id, price=0.0095,
+                                 checked_at=datetime.now(timezone.utc)))
+    tracker._gecko.fetch_prices = AsyncMock(return_value={})
+
+    await tracker.run_once()
+
+    assert tracker._gecko.fetch_prices.call_args.kwargs["refs"]["HOME"] == 0.0095

@@ -107,9 +107,16 @@ def simulate_exit(cfg: Config, df: pd.DataFrame, entry_idx: int, entry_price: fl
     ema = (df["close"].ewm(span=cfg.ema_ride_length, adjust=False).mean()
            if ema_ride else None)
     riding = False  # ema_ride scale-off: True once past the first ROI target
-    # Momentum-death exit (whales, pre-target/pre-arm only): cut a trade that
-    # never got going instead of bleeding to the timeout (GIGGLE: -2.75%/12h).
-    dead_mode = cfg.whale_dead_exit_mode if strategy == "whale" else "off"
+    # Momentum-death exit (pre-target/pre-arm only): cut a trade that never got
+    # going instead of bleeding to the timeout (whale GIGGLE: -2.75%/12h). Whale
+    # and spot use separate knobs — see paper_trading._dead_exit_params.
+    if strategy == "whale":
+        dead_mode, stagnation_hours, stagnation_min_peak_pct = (
+            cfg.whale_dead_exit_mode, cfg.stagnation_hours, cfg.stagnation_min_peak_pct)
+    else:
+        dead_mode, stagnation_hours, stagnation_min_peak_pct = (
+            cfg.standard_dead_exit_mode, cfg.standard_stagnation_hours,
+            cfg.standard_stagnation_min_peak_pct)
     dead_ema = (df["close"].ewm(span=cfg.dead_ema_length, adjust=False).mean()
                 if dead_mode == "ema_cut" else None)
 
@@ -189,8 +196,8 @@ def simulate_exit(cfg: Config, df: pd.DataFrame, entry_idx: int, entry_price: fl
                 # momentum dead: the entry thesis was price above its EMA
                 return i, close, "dead"
             elif (dead_mode == "stagnation"
-                    and elapsed_min >= cfg.stagnation_hours * 60
-                    and (peak - entry_price) / entry_price * 100 < cfg.stagnation_min_peak_pct):
+                    and elapsed_min >= stagnation_hours * 60
+                    and (peak - entry_price) / entry_price * 100 < stagnation_min_peak_pct):
                 # never even touched +X% in H hours: the thrust failed
                 return i, close, "dead"
         # 4) max-hold timeout at the close
@@ -263,10 +270,10 @@ def simulate_coin(cfg: Config, symbol: str, df: pd.DataFrame,
                         busy_until["whale"] = i + cfg.whale_retest_wait_candles
                 else:
                     candidates.append(("whale", i + 1, float(df["open"].iloc[i + 1])))
-        if strategies in ("both", "spot") and i >= busy_until["standard"]:
+        if (strategies in ("both", "spot") and i >= busy_until["standard"]
+                and (bullish or cfg.spot_bypass_regime)):
             ind = compute_indicators(window, cfg, df_htf=_htf(window))
-            bar = cfg.signal_threshold if bullish else cfg.bear_signal_threshold
-            if ind.total >= bar:
+            if ind.total >= cfg.signal_threshold:
                 candidates.append(("standard", i + 1, float(df["open"].iloc[i + 1])))
 
         for tag, entry_idx, entry_price in candidates:
@@ -405,11 +412,13 @@ _SWEEP_GRID = {
     "scale_out_enabled": [False, True],
 }
 
-# Spot sweep: entry bars + exit shape. Indicator scores are precomputed once per
-# coin (they don't depend on these), so all combos re-test in seconds.
+# Spot sweep: entry bar + exit shape. Indicator scores are precomputed once per
+# coin (they don't depend on these), so all combos re-test in seconds. Bear
+# regime is now a hard gate (spot_bypass_regime), not a swept threshold — see
+# run_spot_dead_exit_sweep for the stagnation-cut sweep, kept separate the same
+# way whale's dead-exit sweep is its own function rather than folded in here.
 _SPOT_SWEEP_GRID = {
     "signal_threshold": [70.0, 75.0, 80.0],
-    "bear_signal_threshold": [75.0, 80.0, 85.0],
     "trail_arm_pct": [4.0, 6.0],
     "atr_stop_multiplier": [1.5, 2.5],
     "scale_out_enabled": [False, True],
@@ -468,8 +477,9 @@ def simulate_spot_from_scores(cfg: Config, symbol: str, df: pd.DataFrame,
             break
         if i < busy_until:
             continue
-        bar = cfg.signal_threshold if bullish else cfg.bear_signal_threshold
-        if total < bar:
+        if not bullish and not cfg.spot_bypass_regime:
+            continue
+        if total < cfg.signal_threshold:
             continue
         entry_idx = i + 1
         entry_price = float(df["open"].iloc[entry_idx])
@@ -517,9 +527,11 @@ def run_spot_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
         n, wr, net = _trade_stats(evaluate(combo, "train" if holdout else "all"))
         rows.append((combo, n, wr, net))
     rows.sort(key=lambda r: r[3], reverse=True)
-    print(f"\n{'bar':>5} {'bear_bar':>8} {'trail_arm':>9} {'atr_stop':>8} | {'trades':>6} {'win%':>5} {'net_exp':>8}")
+    col_hdr = " ".join(f"{k:>10}" for k in keys)
+    print(f"\n{col_hdr} | {'trades':>6} {'win%':>5} {'net_exp':>8}")
     for combo, n, wr, net in rows:
-        print(f"{combo[0]:>5} {combo[1]:>8} {combo[2]:>9} {combo[3]:>8} | {n:>6} {wr:>4.0f}% {net:>+7.2f}%")
+        col_vals = " ".join(f"{v!s:>10}" for v in combo)
+        print(f"{col_vals} | {n:>6} {wr:>4.0f}% {net:>+7.2f}%")
     if holdout:
         _print_holdout(rows, evaluate, holdout)
     print("\n(net_exp = average net P&L per trade after fees+slippage; higher is better)")
@@ -726,6 +738,176 @@ def run_dead_exit_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
     print("\n(net_exp = avg net P&L/trade after costs; adopt a mode only if it beats OFF out-of-sample)")
 
 
+def run_spot_dead_exit_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
+                             regime: Optional[pd.Series], holdout: int = 0) -> None:
+    """Spot's own stagnation sweep — separate from whale's run_dead_exit_sweep
+    because spot's real winners develop far slower (live sample: 3 of 5 hadn't
+    touched +1% by hour 4; final gains landed 12-19% many hours later), so
+    whale's 2-4h windows would be wrong here. Wider windows tested instead.
+    Adoption rule is the same as whale's: only ship a config that beats OFF on
+    the HOLDOUT, since a rule that cuts future winners must not go live."""
+    configs: list[tuple[str, Config]] = [
+        ("off (baseline)", replace(cfg, standard_dead_exit_mode="off"))]
+    for hours in (6.0, 8.0, 12.0, 16.0):
+        for peak in (0.5, 1.0, 1.5):
+            configs.append((f"stagnation {hours:.0f}h<+{peak:.1f}%",
+                            replace(cfg, standard_dead_exit_mode="stagnation",
+                                    standard_stagnation_hours=hours,
+                                    standard_stagnation_min_peak_pct=peak)))
+
+    def evaluate(c: Config, segment: str) -> list[SimTrade]:
+        trades: list[SimTrade] = []
+        for sym, df in histories.items():
+            s, e = _segment_bounds(len(df), holdout, segment)
+            trades.extend(simulate_coin(c, sym, df, regime, strategies="spot",
+                                        scan_start=s, scan_end=e))
+        return trades
+
+    def dead_stats(trades: list[SimTrade]) -> str:
+        dead = [t for t in trades if t.outcome == "dead"]
+        if not dead:
+            return "-"
+        return f"{len(dead)}x {statistics.mean(t.pnl_pct for t in dead):+.1f}%"
+
+    seg = "train" if holdout else "all"
+    print(f"\n{'config':18} {'trades':>6} {'win%':>5} {'avgW':>6} {'maxW':>7} {'net_exp':>8}  {'dead':>12}")
+    for label, c in configs:
+        trades = evaluate(c, seg)
+        m = _exit_metrics(trades)
+        print(f"{label:18} {m[0]:>6} {m[1]:>4.0f}% {m[2]:>+5.1f}% {m[3]:>+6.1f}% {m[4]:>+7.2f}%  {dead_stats(trades):>12}")
+    if holdout:
+        print(f"\n--- OUT-OF-SAMPLE (last {holdout // _CANDLES_PER_DAY} days, never ranked) ---")
+        for label, c in configs:
+            trades = evaluate(c, "test")
+            m = _exit_metrics(trades)
+            print(f"  {label:18} {m[0]:>4}tr {m[1]:>3.0f}%w  net {m[4]:+.2f}%  dead {dead_stats(trades)}")
+    print("\n(net_exp = avg net P&L/trade after costs; adopt a mode only if it beats OFF out-of-sample)")
+
+
+def _tpsl_stats(trades: list[SimTrade]) -> tuple[int, float, float, float, float]:
+    """(n, win% by pnl>0, avg win, avg loss, net expectancy after costs).
+    win% counts any trade closing green — timeouts/dead included — matching
+    the live /stats math, unlike _trade_stats' outcome=="win" count."""
+    if not trades:
+        return 0, 0.0, 0.0, 0.0, 0.0
+    wins = [t.pnl_pct for t in trades if t.pnl_pct > 0]
+    losses = [t.pnl_pct for t in trades if t.pnl_pct <= 0]
+    net = statistics.mean(t.pnl_pct - t.cost_pct for t in trades)
+    return (len(trades), len(wins) / len(trades) * 100,
+            statistics.mean(wins) if wins else 0.0,
+            statistics.mean(losses) if losses else 0.0, net)
+
+
+def _print_tpsl_table(rows: list, evaluate, holdout: int) -> None:
+    """Shared TP/SL sweep report: train table sorted by win%, then the holdout
+    check (net-positive train combos, or the top-5 by win% if none qualify)."""
+    print(f"\n{'TP%':>5} {'SL%':>5} | {'trades':>6} {'win%':>5} {'avgW':>7} {'avgL':>7} {'net_exp':>8}")
+    for (tp, sl), n, wr, aw, al, net in rows:
+        print(f"{tp:>5.0f} {sl:>5.0f} | {n:>6} {wr:>4.0f}% {aw:>+6.2f}% {al:>+6.2f}% {net:>+7.2f}%")
+    if holdout:
+        pos = [r for r in rows if r[5] > 0][:5]
+        top = pos or rows[:5]
+        print(f"\n--- OUT-OF-SAMPLE (last {holdout // _CANDLES_PER_DAY} days, never ranked; "
+              f"top train combos" + ("" if pos else
+              " — NONE net-positive in train, shown for comparison only") + ") ---")
+        for (tp, sl), n, wr, aw, al, net in top:
+            tn, twr, taw, tal, tnet = _tpsl_stats(evaluate(tp, sl, "test"))
+            print(f"  TP {tp:.0f} / SL {sl:.0f}: train {wr:.0f}%w {net:+.2f}% ({n}tr) -> "
+                  f"test {twr:.0f}%w {tnet:+.2f}% ({tn}tr)")
+    print("\n(win% = trades closing green incl. timeouts, live /stats math; "
+          "adopt only a combo that stays net-positive out-of-sample)")
+
+
+def run_whale_tpsl_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
+                         regime: Optional[pd.Series], holdout: int = 0) -> None:
+    """Fixed TP/SL grid for whale, mirroring the LIVE exit path since 2026-07-29:
+    a flat target/stop per trade (no ATR scaling, no trailing), with the
+    stagnation dead-exit and max-hold timeout still active. Goal: the flat
+    TP/SL that maximizes WIN RATE without going net-negative after costs
+    (user accepts a lower reward:risk for more green closes).
+
+    Two deliberate metric differences vs the other sweeps:
+    - win% counts trades closing with pnl > 0 (timeouts/dead included), the
+      same math as live /stats — not outcome == "win";
+    - ranking is by TRAIN win% among net-positive combos, not by net_exp.
+    Live F&G scaling (x0.7-1.3 on both legs) is not simulated; the sweep
+    compares base values."""
+    def fixed(tp: float, sl: float) -> Config:
+        return replace(cfg,
+                       whale_roi=[(0.0, tp)],
+                       whale_stop_loss_pct=sl,
+                       stop_pct_min=sl, stop_pct_max=sl,  # pin the ATR clamp -> flat stop
+                       trail_arm_pct=1e9,                 # live fixed mode never arms a trail
+                       scale_out_enabled=False,
+                       whale_exit_mode="roi")
+
+    combos = [(tp, sl) for tp in (4.0, 6.0, 8.0, 10.0, 15.0, 25.0)
+              for sl in (5.0, 10.0, 15.0, 25.0)]
+    print(f"Sweeping {len(combos)} fixed TP/SL combos over {len(histories)} coins"
+          + (f" (holdout: last {holdout // _CANDLES_PER_DAY} days)" if holdout else "") + "...")
+
+    def evaluate(tp: float, sl: float, segment: str) -> list[SimTrade]:
+        c = fixed(tp, sl)
+        trades: list[SimTrade] = []
+        for sym, df in histories.items():
+            s, e = _segment_bounds(len(df), holdout, segment)
+            trades.extend(simulate_coin(c, sym, df, regime, strategies="whale",
+                                        scan_start=s, scan_end=e))
+        return trades
+
+    seg = "train" if holdout else "all"
+    rows = []
+    for tp, sl in combos:
+        rows.append(((tp, sl), *_tpsl_stats(evaluate(tp, sl, seg))))
+    rows.sort(key=lambda r: (r[2], r[5]), reverse=True)
+    _print_tpsl_table(rows, evaluate, holdout)
+
+
+def run_spot_tpsl_sweep(cfg: Config, histories: dict[str, pd.DataFrame],
+                        regime: Optional[pd.Series], holdout: int = 0) -> None:
+    """Spot's fixed TP/SL grid — same live-mirroring exit path as the whale
+    version (flat target/stop, no trailing, spot's 8h<+1.5% stagnation cut and
+    24h timeout active), same win-rate-first ranking. Spot develops far slower
+    than whale, so nearer targets are swept. Indicator scores are precomputed
+    once; combos re-test in seconds. News gate not simulated (optimistic)."""
+    print(f"Precomputing indicator scores for {len(histories)} coins "
+          f"(one heavy pass; combos re-test in seconds)...")
+    scores: dict[str, list] = {}
+    for n, (sym, df) in enumerate(histories.items(), 1):
+        scores[sym] = precompute_spot_scores(cfg, df, regime)
+        if n % 10 == 0:
+            print(f"  ...{n}/{len(histories)} coins scored")
+
+    def fixed(tp: float, sl: float) -> Config:
+        return replace(cfg,
+                       standard_roi=[(0.0, tp)],
+                       stop_pct_min=sl, stop_pct_max=sl,  # pin the ATR clamp -> flat stop
+                       whale_stop_loss_pct=sl,            # _exit_levels' no-ATR fallback
+                       trail_arm_pct=1e9,                 # live fixed mode never arms a trail
+                       scale_out_enabled=False)
+
+    combos = [(tp, sl) for tp in (2.0, 3.0, 4.0, 5.0, 7.0, 10.0)
+              for sl in (3.0, 5.0, 7.0, 10.0)]
+    print(f"Sweeping {len(combos)} fixed TP/SL combos over {len(histories)} coins"
+          + (f" (holdout: last {holdout // _CANDLES_PER_DAY} days)" if holdout else "") + "...")
+
+    def evaluate(tp: float, sl: float, segment: str) -> list[SimTrade]:
+        c = fixed(tp, sl)
+        trades: list[SimTrade] = []
+        for sym, df in histories.items():
+            s, e = _segment_bounds(len(df), holdout, segment)
+            trades.extend(simulate_spot_from_scores(c, sym, df, scores[sym],
+                                                    scan_start=s, scan_end=e))
+        return trades
+
+    seg = "train" if holdout else "all"
+    rows = []
+    for tp, sl in combos:
+        rows.append(((tp, sl), *_tpsl_stats(evaluate(tp, sl, seg))))
+    rows.sort(key=lambda r: (r[2], r[5]), reverse=True)
+    _print_tpsl_table(rows, evaluate, holdout)
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser(description="Replay history through the live logic")
     ap.add_argument("--days", type=int, default=21)
@@ -735,7 +917,9 @@ async def main() -> None:
                          "where the live bot actually finds whales)")
     ap.add_argument("--strategy", choices=["both", "whale", "spot"], default="both")
     ap.add_argument("--sweep", choices=["whale", "spot", "whale-exits", "whale-exit-mode",
-                                        "whale-dead-exit"], default=None,
+                                        "whale-dead-exit", "spot-dead-exit", "whale-tpsl",
+                                        "spot-tpsl"],
+                    default=None,
                     help="grid-search parameters for one strategy instead of a single run")
     ap.add_argument("--min-volume", type=float, default=0,
                     help="only test coins with at least this much 24h USD volume "
@@ -789,6 +973,15 @@ async def main() -> None:
         return
     if args.sweep == "whale-dead-exit":
         run_dead_exit_sweep(cfg, histories, regime, holdout=holdout)
+        return
+    if args.sweep == "spot-dead-exit":
+        run_spot_dead_exit_sweep(cfg, histories, regime, holdout=holdout)
+        return
+    if args.sweep == "whale-tpsl":
+        run_whale_tpsl_sweep(cfg, histories, regime, holdout=holdout)
+        return
+    if args.sweep == "spot-tpsl":
+        run_spot_tpsl_sweep(cfg, histories, regime, holdout=holdout)
         return
 
     trades: list[SimTrade] = []

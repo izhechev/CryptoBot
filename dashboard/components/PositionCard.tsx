@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Position, LiveUpdate } from "@/lib/types";
+import { Position, LiveUpdate, IconMap } from "@/lib/types";
+import { CoinIcon } from "@/components/CoinIcon";
 
 const WHALE_HOLD_H = 12;
 const STD_HOLD_H = 24;
@@ -14,7 +15,9 @@ function fmtPrice(p: number) {
   return p.toFixed(decimals).replace(/0+$/, "").replace(/\.$/, "");
 }
 
-export function PositionCard({ position, live }: { position: Position; live: LiveUpdate }) {
+export function PositionCard({ position, live, icons }: {
+  position: Position; live: LiveUpdate; icons: IconMap;
+}) {
   const whale = position.strategy === "whale";
   const accent = whale ? "var(--amber)" : "var(--green)";
   // Prefer the live WS tick; fall back to the last-known price from /positions
@@ -43,6 +46,7 @@ export function PositionCard({ position, live }: { position: Position; live: Liv
          style={{ borderColor: "var(--border)", borderLeft: `2px solid ${accent}` }}>
       <div className="flex items-center justify-between mb-1">
         <div className="flex items-center gap-2">
+          <CoinIcon url={icons[position.coin_symbol]} size={18} />
           <span className="text-base font-bold font-display tracking-wide text-[var(--text)]">
             {position.coin_symbol}
           </span>
@@ -62,10 +66,17 @@ export function PositionCard({ position, live }: { position: Position; live: Liv
         </span>
       </div>
 
-      <div className="flex justify-between text-[11px] tnum text-[var(--muted)] mb-2">
+      <div className="flex justify-between text-[11px] tnum text-[var(--muted)] mb-1">
         <span>entry ${fmtPrice(position.entry_price)}</span>
         <span style={{ color: "var(--text)" }}>now ${fmtPrice(current)}</span>
       </div>
+
+      {(position.take_profit_pct != null || position.stop_pct != null) && (
+        <div className="flex justify-between text-[10px] tnum text-[var(--faint)] mb-2">
+          <span>TP <span style={{ color: "var(--green)" }}>+{position.take_profit_pct?.toFixed(2) ?? "—"}%</span></span>
+          <span>SL <span style={{ color: "var(--red)" }}>-{position.stop_pct?.toFixed(2) ?? "—"}%</span></span>
+        </div>
+      )}
 
       {/* time-to-timeout bar */}
       <div className="flex items-center gap-2">

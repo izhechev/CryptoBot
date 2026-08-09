@@ -24,6 +24,8 @@ export interface Position {
   strategy: string;
   scale_price: number | null;  // half banked at this price (scale-out)
   current_price?: number | null;  // last recorded tick price (open positions)
+  take_profit_pct: number | null;  // this trade's TP target (Fear & Greed-scaled at entry)
+  stop_pct: number | null;         // this trade's SL distance (Fear & Greed-scaled at entry)
 }
 
 export interface PendingOrder {
@@ -54,6 +56,9 @@ export interface Stats {
   next_scan_in: number | null;  // seconds until the next full scan (backend clock)
   regime_bullish: boolean | null;  // BTC vs its 4h EMA-50; null until the first check
   whales_blocked: number;          // whale spikes skipped in the current bear stretch
+  fear_greed_value: number;        // alternative.me Crypto Fear & Greed Index, 0-100
+  fear_greed_label: string;        // "Extreme Fear" | "Fear" | "Neutral" | "Greed" | "Extreme Greed"
+  fear_greed_enabled: boolean;     // whether it's actually scaling TP/SL right now
 }
 
 export interface BotConfig {
@@ -70,3 +75,4 @@ export interface BotConfig {
 }
 
 export type LiveUpdate = Record<number, { current_price: number; pnl_pct: number }>;
+export type IconMap = Record<string, string>;  // coin_symbol -> logo image URL

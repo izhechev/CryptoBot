@@ -14,11 +14,16 @@ class TradeOutcome(str, Enum):
     DEAD = "dead"    # momentum-death cut: the thrust never got going
 
 
-def roi_target(cfg: Config, strategy: str, elapsed_min: float) -> float:
-    """Time-decaying take-profit target (%) for how long a trade has been open.
-    Table is [(minutes, pct)] sorted high->low minutes; the first row whose
-    minute-threshold has elapsed applies. Shared by live trading and the backtester
-    so the simulation can never drift from real behavior."""
+def roi_target(cfg: Config, strategy: str, elapsed_min: float,
+               override: Optional[float] = None) -> float:
+    """Take-profit target (%) for how long a trade has been open. `override` (a
+    per-position fixed target, e.g. Fear & Greed-scaled at entry) wins outright —
+    used instead of the time-decaying table, which is for legacy positions/backtest
+    combos that don't set one. Table is [(minutes, pct)] sorted high->low minutes;
+    the first row whose minute-threshold has elapsed applies. Shared by live
+    trading and the backtester so the simulation can never drift from real behavior."""
+    if override is not None:
+        return override
     table = cfg.whale_roi if strategy == "whale" else cfg.standard_roi
     for minutes, pct in table:
         if elapsed_min >= minutes:
@@ -44,7 +49,8 @@ class PaperTrading:
     def open_position(self, event: SignalEvent, entry_price: float,
                       exchange: Optional[str] = None,
                       stop_pct: Optional[float] = None,
-                      trail_pct: Optional[float] = None) -> Position:
+                      trail_pct: Optional[float] = None,
+                      take_profit_pct: Optional[float] = None) -> Position:
         pos = Position(
             id=None,
             signal_id=event.signal_id,
@@ -61,6 +67,7 @@ class PaperTrading:
             stop_pct=stop_pct,
             trail_pct=trail_pct,
             peak_price=entry_price,
+            take_profit_pct=take_profit_pct,
         )
         return self._db.save_position(pos)
 
@@ -71,8 +78,18 @@ class PaperTrading:
         _, stop_loss_pct, _ = self._exit_params(pos.strategy)
         return stop_loss_pct
 
-    def _roi_target(self, strategy: str, elapsed_min: float) -> float:
-        return roi_target(self._cfg, strategy, elapsed_min)
+    def _roi_target(self, strategy: str, elapsed_min: float, override: Optional[float] = None) -> float:
+        return roi_target(self._cfg, strategy, elapsed_min, override=override)
+
+    def _dead_exit_params(self, strategy: str) -> tuple[str, float, float]:
+        """(mode, stagnation_hours, stagnation_min_peak_pct) for a strategy. Whale
+        and spot get separate knobs — whale enters mid-thrust so a tight window is
+        safe, spot's static-score entries take much longer to prove out."""
+        if strategy == "whale":
+            return (self._cfg.whale_dead_exit_mode, self._cfg.stagnation_hours,
+                    self._cfg.stagnation_min_peak_pct)
+        return (self._cfg.standard_dead_exit_mode, self._cfg.standard_stagnation_hours,
+                self._cfg.standard_stagnation_min_peak_pct)
 
     def check_position(self, pos: Position, current_price: float) -> Optional[TradeOutcome]:
         """Exit logic, in priority order:
@@ -82,9 +99,11 @@ class PaperTrading:
         2. armed trailing exit — once the trade has PEAKED past trail_arm_pct, the
            ROI cap is lifted and we exit on a trail_pct give-back from the peak;
         3. time-decaying ROI target (books fading winners that never armed);
-        4. volatility-scaled stop-loss; 5. stagnation cut — a whale that never
-           touched +X% within H hours is dead momentum, close at market (2026-07-05
-           sweep: every stagnation variant beat baseline in- and out-of-sample);
+        4. volatility-scaled stop-loss; 5. stagnation cut — a trade that never
+           touched +X% within H hours is dead momentum, close at market (whale:
+           2026-07-05 sweep, every stagnation variant beat baseline in- and
+           out-of-sample; spot has its own separate, as-yet-unswept knobs — off
+           by default, see _dead_exit_params);
         6. max-hold timeout."""
         _, _, max_hold_hours = self._exit_params(pos.strategy)
         pnl_pct = (current_price - pos.entry_price) / pos.entry_price * 100
@@ -112,14 +131,15 @@ class PaperTrading:
         if armed:
             if current_price <= peak * (1 - trail_pct / 100):
                 return TradeOutcome.WIN if pnl_pct > 0 else TradeOutcome.LOSS
-        elif pnl_pct >= self._roi_target(pos.strategy, elapsed.total_seconds() / 60):
+        elif pnl_pct >= self._roi_target(pos.strategy, elapsed.total_seconds() / 60,
+                                         override=pos.take_profit_pct):
             return TradeOutcome.SCALE if self._cfg.scale_out_enabled else TradeOutcome.WIN
         if pnl_pct <= -self._stop_pct_for(pos):
             return TradeOutcome.LOSS
-        if (pos.strategy == "whale" and not armed
-                and self._cfg.whale_dead_exit_mode == "stagnation"
-                and elapsed >= timedelta(hours=self._cfg.stagnation_hours)
-                and peak_pnl < self._cfg.stagnation_min_peak_pct):
+        dead_mode, dead_hours, dead_min_peak_pct = self._dead_exit_params(pos.strategy)
+        if (not armed and dead_mode == "stagnation"
+                and elapsed >= timedelta(hours=dead_hours)
+                and peak_pnl < dead_min_peak_pct):
             return TradeOutcome.DEAD
         if elapsed >= timedelta(hours=max_hold_hours):
             return TradeOutcome.TIMEOUT

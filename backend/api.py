@@ -6,6 +6,8 @@ from backend.config import Config
 from backend.storage import Storage
 from backend.scan_clock import SCAN_CLOCK
 from backend.market_state import MARKET_STATE
+from backend.fear_greed import fetch_fear_greed
+from backend.gecko import GeckoClient
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,8 @@ def _serialize(obj: Any) -> Any:
 def create_app(db: Storage, cfg: Config) -> FastAPI:
     app = FastAPI(title="CryptoBot API")
     ws_manager = _WSManager()
+    gecko = GeckoClient(cfg.gecko_api_key)
+    icon_cache: dict[str, str] = {}  # a coin's icon URL never changes — cache forever
 
     app.add_middleware(
         CORSMiddleware,
@@ -80,13 +84,26 @@ def create_app(db: Storage, cfg: Config) -> FastAPI:
         the tracker. Shown separately from positions (trading-terminal convention)."""
         return [_serialize(p) for p in db.get_pending_orders()]
 
+    @app.get("/icons")
+    async def get_icons():
+        """{symbol: coingecko_image_url} for every coin recently seen (positions +
+        signals), so the dashboard can show a logo next to each ticker. Cached
+        per-symbol for the life of the process — an icon URL doesn't change."""
+        pairs = {(p.coin_symbol, p.coin_name) for p in db.get_all_positions(limit=200)}
+        pairs |= {(s.coin_symbol, s.coin_name) for s in db.get_recent_signals(limit=200)}
+        uncached = [(sym, name) for sym, name in pairs if sym not in icon_cache]
+        if uncached:
+            icon_cache.update(await gecko.fetch_icons(uncached))
+        return {sym: icon_cache[sym] for sym, _ in pairs if sym in icon_cache}
+
     @app.get("/positions/{position_id}/ticks")
     def get_ticks(position_id: int):
         return [_serialize(t) for t in db.get_ticks_for_position(position_id)]
 
     @app.get("/stats")
-    def get_stats():
+    async def get_stats():
         rem = SCAN_CLOCK.seconds_remaining()
+        fg_value, fg_label = await fetch_fear_greed()
         return {
             "overall": db.get_stats(cost_pct=cfg.assumed_cost_pct),
             "standard": db.get_stats(strategy="standard", cost_pct=cfg.assumed_cost_pct),
@@ -96,6 +113,9 @@ def create_app(db: Storage, cfg: Config) -> FastAPI:
             # while BTC is below its 4h EMA-50 — show that instead of a silent zero.
             "regime_bullish": MARKET_STATE.regime_bullish,
             "whales_blocked": MARKET_STATE.whales_blocked,
+            "fear_greed_value": fg_value,
+            "fear_greed_label": fg_label,
+            "fear_greed_enabled": cfg.fear_greed_enabled,
         }
 
     @app.get("/config")

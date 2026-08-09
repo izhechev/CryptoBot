@@ -90,29 +90,36 @@ class NewsClient:
         Used as the pre-trade gate. Verdicts are cached per coin for a few hours
         (quota budget); on failure it falls back through alternate models (503/429
         usually hit one model's bucket, not all), then fails safe to neutral so an
-        API hiccup never blocks a trade. Called only for candidates about to open."""
-        cached = self._catalyst_cache.get(symbol)
-        if cached and time.monotonic() - cached[0] < _CATALYST_CACHE_TTL:
-            return cached[1]
-        last_err: Exception | None = None
-        for model in _GROUNDED_MODELS:
-            try:
-                resp = self._client.models.generate_content(
-                    model=model,
-                    contents=_CATALYST_PROMPT.format(name=name or symbol, symbol=symbol),
-                    config=types.GenerateContentConfig(
-                        tools=[types.Tool(google_search=types.GoogleSearch())]
-                    ),
-                )
-                result = self._parse_catalyst(resp.text or "")
-                self._catalyst_cache[symbol] = (time.monotonic(), result)
-                return result
-            except Exception as e:
-                last_err = e
-                logger.debug("  %s: %s failed (%s) — trying next model", symbol, model, e)
-        # Failures are NOT cached — quota/overload may clear by the next scan.
-        logger.warning("  %s: all grounded models failed (%s) — neutral", symbol, last_err)
+        API hiccup never blocks a trade. Called only for candidates about to open.
+
+        2026-07-29: DISABLED (user request) — the loosened entry thresholds pushed
+        far more candidates through this gate per scan than the free-tier Gemini
+        quota can serve, so most calls were hitting 429 across every model in the
+        fallback chain anyway. Short-circuits to neutral (no veto, no real news)
+        until re-enabled. Uncomment the block below to restore it."""
         return _NEUTRAL_CATALYST
+        # cached = self._catalyst_cache.get(symbol)
+        # if cached and time.monotonic() - cached[0] < _CATALYST_CACHE_TTL:
+        #     return cached[1]
+        # last_err: Exception | None = None
+        # for model in _GROUNDED_MODELS:
+        #     try:
+        #         resp = self._client.models.generate_content(
+        #             model=model,
+        #             contents=_CATALYST_PROMPT.format(name=name or symbol, symbol=symbol),
+        #             config=types.GenerateContentConfig(
+        #                 tools=[types.Tool(google_search=types.GoogleSearch())]
+        #             ),
+        #         )
+        #         result = self._parse_catalyst(resp.text or "")
+        #         self._catalyst_cache[symbol] = (time.monotonic(), result)
+        #         return result
+        #     except Exception as e:
+        #         last_err = e
+        #         logger.debug("  %s: %s failed (%s) — trying next model", symbol, model, e)
+        # # Failures are NOT cached — quota/overload may clear by the next scan.
+        # logger.warning("  %s: all grounded models failed (%s) — neutral", symbol, last_err)
+        # return _NEUTRAL_CATALYST
 
     @staticmethod
     def _parse_catalyst(text: str, max_age_hours: float = 72.0) -> CatalystResult:
