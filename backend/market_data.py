@@ -93,9 +93,13 @@ class MarketData:
         """Fetch entry-timeframe OHLCV candles. None on error or insufficient data."""
         return await self._fetch(symbol, quote, self._cfg.candle_timeframe, self._cfg.candle_limit)
 
-    async def fetch_htf_candles(self, symbol: str, quote: str = "USDT") -> Optional[pd.DataFrame]:
-        """Fetch higher-timeframe (e.g. 4h) candles for the trend confluence filter."""
-        return await self._fetch(symbol, quote, self._cfg.htf_timeframe, self._cfg.htf_candle_limit)
+    async def fetch_htf_candles(self, symbol: str, quote: str = "USDT",
+                                limit: Optional[int] = None) -> Optional[pd.DataFrame]:
+        """Fetch higher-timeframe (e.g. 4h) candles for the trend confluence filter.
+        `limit` overrides htf_candle_limit — the BTC regime check needs a deeper
+        series than the per-coin filter to seed a stable EMA-50."""
+        return await self._fetch(symbol, quote, self._cfg.htf_timeframe,
+                                 limit or self._cfg.htf_candle_limit)
 
     async def fetch_book_stats(self, symbol: str, quote: str = "USDT",
                                exchange_id: Optional[str] = None,

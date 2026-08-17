@@ -98,7 +98,10 @@ async def test_get_config(app, cfg):
     data = resp.json()
     assert data["signal_threshold"] == cfg.signal_threshold
     assert data["whale_take_profit_pct"] == cfg.whale_take_profit_pct
-    assert data["tracking_interval_seconds"] == cfg.tracking_interval_seconds
+    # The dashboard's "Track interval" must be the cadence the tracker actually
+    # runs at. It used to serve tracking_interval_seconds, which nothing reads —
+    # so the panel claimed 60s while TP/SL were checked every 300s.
+    assert data["tracking_interval_seconds"] == cfg.price_feed_seconds
 
 
 @pytest.mark.asyncio

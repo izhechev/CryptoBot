@@ -27,8 +27,15 @@ def db(tmp_path):
 
 
 @pytest.fixture
-def tracker(cfg, db):
+def tracker(cfg, db, tmp_path):
     t = Tracker(cfg, db)
+    # Point the journal at tmp. Tracker defaults to the REAL trade_journal.csv in
+    # the working directory, so every test here that closes a position appended a
+    # fixture trade to the live append-only record — 12 fake closes (entry_price
+    # 100, symbols GRD/TRL/FADE) landed in it on 2026-08-17 from one `pytest` run.
+    # That file is the history a database wipe cannot take back; tests do not
+    # write to it.
+    t._journal_path = str(tmp_path / "journal.csv")
     t._gecko = AsyncMock()
     t._notifier = AsyncMock()
     t._notifier.send_position_closed = AsyncMock()
@@ -375,3 +382,45 @@ async def test_reference_price_follows_the_last_seen_tick(tracker, db):
     await tracker.run_once()
 
     assert tracker._gecko.fetch_prices.call_args.kwargs["refs"]["HOME"] == 0.0095
+
+
+@pytest.mark.asyncio
+async def test_tracks_the_low_water_mark_for_mae(tracker, db):
+    """peak_price answers "how far did it run for us?". Without the mirror image,
+    "was the stop too wide?" stays unanswerable — the question that sat open
+    while an untested -8% stop ran live."""
+    make_open_position(db, "SOL", 100.0)
+
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"SOL": 96.0})
+    await tracker.run_once()
+
+    assert db.get_open_positions()[0].trough_price == pytest.approx(96.0)
+
+
+@pytest.mark.asyncio
+async def test_low_water_mark_only_moves_down(tracker, db):
+    make_open_position(db, "SOL", 100.0)
+
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"SOL": 96.0})
+    await tracker.run_once()
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"SOL": 99.0})
+    await tracker.run_once()
+
+    assert db.get_open_positions()[0].trough_price == pytest.approx(96.0)
+
+
+@pytest.mark.asyncio
+async def test_closing_a_position_appends_it_to_the_journal(tracker, db, tmp_path):
+    """The whole point of the module: a close must reach the append-only file, so
+    the history survives a database wipe. Nothing called append_closed before."""
+    path = tmp_path / "journal.csv"
+    tracker._journal_path = str(path)
+    make_open_position(db, "SOL", 100.0)
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"SOL": 110.0})
+
+    await tracker.run_once()
+
+    lines = path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 2                     # header + the closed trade
+    assert lines[1].split(",")[1] == "SOL"
+    assert lines[1].split(",")[3] == "win"

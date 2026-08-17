@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState, useRef, useCallback } from "react";
+import Link from "next/link";
 import { StatBar } from "@/components/StatBar";
 import { PositionCard } from "@/components/PositionCard";
 import { TradesTable } from "@/components/TradesTable";
@@ -101,6 +102,9 @@ export default function Dashboard() {
             <span className="text-[10px] uppercase tracking-[0.3em] text-[var(--faint)]">signal terminal</span>
           </div>
         </div>
+        <Link href="/coin" className="text-[11px] uppercase tracking-[0.15em] font-display text-[var(--muted)] hover:text-[var(--text)] border border-[var(--border)] hover:border-[var(--border-bright)] px-3 py-1.5 transition-colors">
+          🔍 Coin
+        </Link>
         {config && <ConfigDrawer config={config} />}
       </header>
 

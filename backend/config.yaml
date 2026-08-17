@@ -1,8 +1,63 @@
 # backend/config.yaml
 scan:
   interval_minutes: 60
-  max_open_positions: 30        # sanity ceiling only — quality gates decide what opens
+  max_open_positions: 0         # 0 = uncapped (2026-08-17). The entry gates decide what
+                                # opens; the ceiling was only ever a blunt backstop and it
+                                # silently threw away qualifying signals once 30 were open.
+  # Stablecoins can't reach a take-profit — they hold a slot until the max-hold
+  # timeout (USDP opened live 2026-08-17 and sat at +0.00%). Dropped from the
+  # universe, so neither lane sees them and they cost no scan calls. The list is
+  # the first net; any *USD* ticker trading within 3% of $1 is caught too.
+  # Tokenized stocks (TSMB, SBUXON, BEB opened live 2026-08-17) track an equity:
+  # frozen outside US market hours and all weekend — most of a 24h hold — and the
+  # +2.30% TP is a rare daily move for Starbucks or TSMC. Matched on the product
+  # wording, NOT the issuer: "Ondo" alone would also drop ONDO, a real token.
+  exclude_tokenized_equities: true
+  tokenized_equity_markers: ["tokenized stock", "tokenized equity", "xstock", "bstocks"]
+  exclude_stablecoins: true
+  stablecoin_symbols: [USDT, USDC, USDE, USDS, DAI, USDP, TUSD, BUSD, FDUSD, USDD,
+                       PYUSD, GUSD, LUSD, FRAX, SUSD, USDX, USD1, USDG, USDY, RLUSD,
+                       EURS, EURT, EURC, EURI, XSGD, USDL, USDF]
   regime_filter: true           # BTC below its 4h EMA-50 = bear regime (spot needs an exceptional score)
+  # Coin universe source. "coingecko" pages /coins/markets by descending volume
+  # (~11 pages to reach the $25k floor) — same fields as CMC's listing, and it
+  # makes the listing and the price feed agree on coin NAMES, which removes the
+  # CMC-vs-CoinGecko naming mismatches that left positions with no price feed
+  # (Defi App/HOME, Perle/Pearl — see gecko.py `_corroborated`).
+  universe_source: coingecko
+  # Refresh interval for that universe. CoinGecko's Demo tier is 10k calls/month;
+  # ~11 calls hourly would be ~8k/month on its own, so reuse the list for 6h
+  # (it barely changes) and spend the quota on the price feed instead.
+  universe_refresh_hours: 6
+  # The BTC regime is re-checked this often, on its own loop. It costs ONE BTC
+  # candle fetch, so it does not need the whale sweep's 15-min cadence: the
+  # dashboard banner stays within a minute of the truth, and entries stop within
+  # a minute of BTC losing its 4h trend instead of up to 15.
+  regime_poll_seconds: 60
+  # BTC hovering on its EMA-50 can cross it repeatedly at a 1-min poll. The regime
+  # (and the banner) follows every cross; this only caps how often a flip may
+  # launch a fresh full scan on top of the one already running.
+  rescan_min_interval_minutes: 10
+  # Dead band around the EMA-50 before the verdict itself changes. The regime is
+  # read off the still-forming 4h candle, so its close IS the live BTC tick —
+  # without a band, BTC resting on the line flips the regime every single poll
+  # (2026-08-16: BULL at 22:03:37, BEAR at 22:04:37, one poll apart). Inside the
+  # band the previous verdict stands, so a flip means a real break of trend.
+  # Set to 0 to restore the old knife-edge comparison.
+  regime_hysteresis_pct: 0.4
+  # Candles fetched for the BTC regime EMA-50 ONLY (per-coin HTF stays at
+  # htf_candle_limit). At 100, adjust=False seeds the EMA ~$23 low on BTC — a
+  # +0.036% standing tilt toward BULL, bigger than the deviations it is judging.
+  # Converges by ~200.
+  regime_candle_limit: 250
+  # How many CLOSED 4h candles must sit above the EMA (clear of the band) before
+  # the regime turns bull. The last candle is always still forming, so its "close"
+  # is the live tick — treating that as a trend reclaim opened 20 spot longs on
+  # 2026-08-17 into a week where 1 of 42 closed candles was above the EMA.
+  # Asymmetric by design: bull needs this confirmation, bear does not — a decisive
+  # live break down, or any closed candle back below the EMA, cuts risk at once.
+  # 1 = any single close is enough; 2 demands persistence.
+  regime_confirm_candles: 2
   # Candle/price sources, tried in order. A coin is routed to the first exchange
   # that lists it as a LIVE spot market, so coins not on Binance are still covered
   # and delisted/frozen markets (e.g. spot LIT/USDT) are skipped.
@@ -115,10 +170,18 @@ tracking:
   # TP/SL/timeout each cycle. ONE CoinGecko call per cycle while any position is open
   # — the dominant credit consumer. Budget math (24/7, positions open):
   #   120s ≈ 720/day · 300s ≈ 290/day · 600s ≈ 145/day · 900s ≈ 96/day.
-  # Sized for 2,274 credits left over 17 days to the Jul-1 reset (~100/day for the
-  # feed after reserving ~35/day for the scanner): 900s reaches the reset with margin.
-  # Fine for a strategy that holds for hours with ATR stops + a 2–6% trail.
-  price_feed_seconds: 900
+  #
+  # 2026-08-17: cut 900s -> 300s. At 900s the tracker saw a position four times an
+  # hour and nothing in between — live checks a single spot price per cycle, not
+  # candle highs/lows, so a stop is only enforced where the snapshot lands. VELVET
+  # closed at -30.8% on an 8% stop that way. 300s is the tightest setting that
+  # still fits the Demo tier's 10k calls/month (~290/day only while a position is
+  # open, plus ~35/day for the scanner); watch the credit headroom.
+  #
+  # NOTE: this shortens the gap, it does not close it. The fill is still taken at
+  # the observed price rather than the stop level, so a fast move through the stop
+  # between two cycles still overshoots.
+  price_feed_seconds: 300
   candle_timeframe: "1m"        # timeframe whose high/low is scanned for TP/SL touches
   candle_limit: 60
 
@@ -171,8 +234,9 @@ whale:
   take_profit_pct: 8.0
   stop_loss_pct: 10.0
   max_hold_hours: 12
-  max_open: 6                   # cap concurrent whale positions — 12 overnight longs
-                                # turned one dip into six stop-outs (one beta bet)
+  max_open: 0                   # 0 = uncapped (2026-08-17). Was 6: 12 overnight longs
+                                # turned one dip into six stop-outs (one beta bet), so
+                                # restore a number here if correlated drawdown bites again.
   # Entry-quality filters — fewer but higher-conviction whale rides:
   ema_period: 20                # only ride a thrust while price is above this EMA (skip downtrend bounces)
   min_candle_volume_usd: 10000  # the spike candle must move >= this much $ (kills dead-coin noise)
