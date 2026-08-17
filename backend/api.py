@@ -43,7 +43,7 @@ def _serialize(obj: Any) -> Any:
     return obj
 
 
-def create_app(db: Storage, cfg: Config) -> FastAPI:
+def create_app(db: Storage, cfg: Config, scanner=None) -> FastAPI:
     app = FastAPI(title="CryptoBot API")
     ws_manager = _WSManager()
     gecko = GeckoClient(cfg.gecko_api_key)
@@ -118,6 +118,24 @@ def create_app(db: Storage, cfg: Config) -> FastAPI:
             "fear_greed_enabled": cfg.fear_greed_enabled,
         }
 
+    @app.get("/coin/{symbol}")
+    async def inspect(symbol: str, news: bool = False):
+        """Everything the bot sees for one coin, plus a per-lane entry verdict.
+
+        Runs the same gate predicates the live scanner uses, against the live
+        scanner's own regime state and universe cache — so this can never
+        disagree with what the bot is doing. Read-only."""
+        if scanner is None:
+            return {"symbol": symbol.upper(), "found": False,
+                    "error": "coin inspection needs the scanner; start the bot with backend.main"}
+        from backend.coin_inspect import inspect_coin
+        try:
+            report = await inspect_coin(scanner, symbol, with_news=news)
+        except Exception as e:
+            logger.exception("coin inspect failed for %s", symbol)
+            return {"symbol": symbol.upper(), "found": False, "error": str(e)}
+        return report.to_dict()
+
     @app.get("/config")
     def get_config():
         return {
@@ -129,7 +147,10 @@ def create_app(db: Storage, cfg: Config) -> FastAPI:
             "stop_loss_pct": cfg.stop_loss_pct,
             "max_hold_hours": cfg.max_hold_hours,
             "scan_interval_minutes": cfg.scan_interval_minutes,
-            "tracking_interval_seconds": cfg.tracking_interval_seconds,
+            # The tracker loop sleeps price_feed_seconds — tracking_interval_seconds
+            # is parsed but drives nothing, so serving it showed "Track interval: 60s"
+            # on the dashboard while TP/SL were really checked every 300s.
+            "tracking_interval_seconds": cfg.price_feed_seconds,
             "whale_enabled": cfg.whale_enabled,
             "whale_take_profit_pct": cfg.whale_take_profit_pct,
             "whale_stop_loss_pct": cfg.whale_stop_loss_pct,

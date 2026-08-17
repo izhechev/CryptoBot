@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ from backend.format_utils import fmt_price
 from backend.gecko import GeckoClient
 from backend.scan_clock import SCAN_CLOCK
 from backend.market_state import MARKET_STATE
+from backend import gates
 
 logger = logging.getLogger(__name__)
 _THROTTLE_DELAY = 0.1  # seconds between coins, to respect exchange rate limits
@@ -35,7 +37,11 @@ class _CoinResult:
     technical_score: float = 0.0
     news_score: Optional[float] = None  # None = news gate never reached (not checked)
     total_score: float = 0.0
-    # no_candles | below_pre_filter | scored
+    # no_candles | regime_blocked | spot_disabled | below_pre_filter | scored
+    # Defaults to no_candles because that is the earliest exit in _scan_coin —
+    # every later exit MUST overwrite it, or a blocked scan reports itself as a
+    # dead data feed (2026-08-15: a bear regime and a DNS outage printed the
+    # identical "2469 processed | 2469 skipped (no candles)" summary).
     status: str = "no_candles"
     fired: bool = False
     whale_fired: bool = False
@@ -54,6 +60,14 @@ class Scanner:
         self._notifier: Notifier | None = None
         self._regime_bullish = True  # set per-scan by the market-regime check
         self._liquid_coins: list[CoinListing] = []  # whale fast-lane universe
+        self._coins: list[CoinListing] = []         # cached scan universe
+        self._universe_at = 0.0                     # monotonic time of last refresh
+        # Set when the regime flips bear -> bull, so the hourly loop stops
+        # sleeping and scans now: spot only fires inside the full scan, so
+        # otherwise the dashboard shows BULL for up to an interval with no
+        # entries behind it.
+        self._rescan_requested = asyncio.Event()
+        self._last_flip_scan_at = float("-inf")  # debounces flip-triggered scans
         self._entry_log_path = Path(entry_log_path)
 
     def set_notifier(self, notifier: Notifier) -> None:
@@ -65,16 +79,50 @@ class Scanner:
     async def run_once(self) -> None:
         logger.info("Scan started")
         await self._refresh_regime()
-        coins = await self._cmc.fetch_all_coins(min_volume_24h=self._cfg.min_volume_24h)
+        coins = await self._fetch_universe()
         total = len(coins)
-        # Refresh the whale fast-lane universe (no extra CMC credits).
+        # Refresh the whale fast-lane universe (no extra listing calls).
         self._liquid_coins = [c for c in coins
                               if c.volume_24h >= self._cfg.whale_min_coin_volume_24h]
-        logger.info("Fetched %d coins from CMC (volume-filtered; %d liquid for whale fast lane)",
-                    total, len(self._liquid_coins))
+        logger.info("Universe: %d coins from %s (volume-filtered; %d liquid for whale fast lane)",
+                    total, self._cfg.universe_source, len(self._liquid_coins))
+
+        # Nothing can open while both lanes obey a bear regime, so scanning the
+        # full universe is ~40 minutes of exchange calls for a guaranteed zero.
+        # The universe is still refreshed above, so the flip-triggered rescan
+        # starts from a fresh list.
+        if self._both_lanes_blocked():
+            # Deliberately NOT publishing blocked counts here. whales_blocked
+            # means "spikes we detected and declined"; with the sweep skipped we
+            # never looked, so any number would be invented — filling it with the
+            # universe size renders as "172 whales blocked" on the dashboard,
+            # which claims 172 spikes that were never found. regime_bullish=False
+            # is the honest explanation for the empty board.
+            logger.info(
+                "Scan skipped — bear regime (BTC 4h trend unconfirmed) blocks both spot "
+                "and whale entries; %d coins not scanned. A full scan starts "
+                "immediately when BTC reclaims its 4h trend.", total,
+            )
+            logger.info("Scan complete")
+            return
 
         results: list[_CoinResult] = []
         for i, coin in enumerate(coins, start=1):
+            # The check above only covers the regime at scan START. A scan that
+            # begins in a bull minute and loses the trend at coin 100 would
+            # otherwise grind through the remaining ~2400 for a guaranteed zero —
+            # both entry paths re-read this flag, so nothing can open. It also
+            # spares the dashboard ~2400 spot_blocked increments, which read as a
+            # fabricated count for the same reason the skip above refuses to
+            # publish one.
+            if self._both_lanes_blocked():
+                logger.info(
+                    "Scan aborted at %d/%d — BTC lost its 4h trend mid-scan and "
+                    "both lanes are blocked; the remaining %d coins cannot open "
+                    "anything. A full scan starts when BTC reclaims its trend.",
+                    i - 1, total, total - i + 1,
+                )
+                break
             try:
                 results.append(await self._scan_coin(coin))
             except Exception as e:
@@ -86,79 +134,298 @@ class Scanner:
         self._log_scan_summary(results)
         logger.info("Scan complete")
 
+    async def _fetch_universe(self) -> list[CoinListing]:
+        """The scan universe, cached. The listing barely moves hour to hour, and
+        on CoinGecko's Demo tier (10k calls/month) an hourly ~11-page refresh
+        would eat ~8k of them on its own — so refresh every
+        universe_refresh_hours instead. Falls back to CMC, then to the last good
+        list: scanning a stale universe beats scanning nothing."""
+        age = time.monotonic() - self._universe_at
+        if self._coins and age < self._cfg.universe_refresh_hours * 3600:
+            logger.info("Universe: reusing %d cached coins (%.0f min old)",
+                        len(self._coins), age / 60)
+            return self._coins
+
+        coins: list[CoinListing] = []
+        if self._cfg.universe_source == "coingecko":
+            coins = await self._gecko.fetch_all_coins(min_volume_24h=self._cfg.min_volume_24h)
+            if not coins:
+                logger.warning("CoinGecko universe fetch returned nothing — falling back to CMC")
+        if not coins:
+            coins = await self._cmc.fetch_all_coins(min_volume_24h=self._cfg.min_volume_24h)
+        if not coins:
+            logger.error("Universe fetch failed on every source — keeping the previous %d coins",
+                         len(self._coins))
+            return self._coins
+
+        coins = self._dedupe_by_symbol(coins)
+        coins = self._drop_stablecoins(coins)
+        coins = self._drop_tokenized_equities(coins)
+        self._coins = coins
+        self._universe_at = time.monotonic()
+        return coins
+
+    def _drop_tokenized_equities(self, coins: list[CoinListing]) -> list[CoinListing]:
+        """Remove tokenized stocks (xStocks, bStocks, Ondo tokenized equities).
+
+        Same class of problem as a stablecoin: the asset cannot participate in the
+        strategy. These track an underlying equity, so they only move while that
+        market is open — frozen overnight and all weekend, which is most of a 24h
+        hold — and a +2.30% TP sized for crypto is a rare daily move for Starbucks
+        or TSMC. The 15m volume/RSI signals that select them are calibrated for
+        crypto entirely. TSMB, SBUXON and BEB opened live on 2026-08-17.
+
+        Matched on the PRODUCT wording, never the issuer name: 'Ondo' alone would
+        also drop ONDO, the protocol's own (perfectly tradable) token."""
+        if not self._cfg.exclude_tokenized_equities:
+            return coins
+        markers = [m.lower() for m in self._cfg.tokenized_equity_markers]
+        kept, dropped = [], []
+        for c in coins:
+            name = (c.name or "").lower()
+            (dropped if any(m in name for m in markers) else kept).append(c)
+        if dropped:
+            logger.info("Universe: dropped %d tokenized equit%s — %s", len(dropped),
+                        "y" if len(dropped) == 1 else "ies",
+                        ", ".join(sorted(c.symbol for c in dropped)[:10])
+                        + (" …" if len(dropped) > 10 else ""))
+        return kept
+
+    def _drop_stablecoins(self, coins: list[CoinListing]) -> list[CoinListing]:
+        """Remove dollar pegs from the universe.
+
+        A stablecoin cannot reach a +2.3% take-profit, so an entry on one holds a
+        slot for the full max_hold and exits on timeout — USDP (Pax Dollar) opened
+        live on 2026-08-17 and sat at +0.00%. Filtering here rather than at the
+        entry gate keeps them out of BOTH lanes and off the scan's call budget.
+
+        Two nets, because a hardcoded list goes stale as new pegs list: the
+        configured symbols, plus any *USD* ticker actually trading at a dollar.
+        The price guard is what makes the name test safe — a real coin whose
+        ticker merely contains USD is priced nowhere near 1.0."""
+        if not self._cfg.exclude_stablecoins:
+            return coins
+        known = {s.upper() for s in self._cfg.stablecoin_symbols}
+        kept, dropped = [], []
+        for c in coins:
+            sym = c.symbol.upper()
+            pegged = 0.97 <= (c.price or 0.0) <= 1.03
+            if sym in known or ("USD" in sym and pegged):
+                dropped.append(c.symbol)
+            else:
+                kept.append(c)
+        if dropped:
+            logger.info("Universe: dropped %d stablecoin(s) — %s", len(dropped),
+                        ", ".join(sorted(dropped)[:10])
+                        + (" …" if len(dropped) > 10 else ""))
+        return kept
+
+    @staticmethod
+    def _dedupe_by_symbol(coins: list[CoinListing]) -> list[CoinListing]:
+        """One entry per ticker, keeping the most liquid claimant.
+
+        Tickers are not unique — CoinGecko's listing carries ~150 repeats (SOL the
+        chain vs a wrapped SOL, etc). Everything downstream keys by symbol and
+        routes symbol -> exchange pair, so a duplicate re-scans the SAME market
+        and can open a second position on it, double-counting the trade in the
+        win rate. The listing arrives volume-ordered, so first-seen is the
+        liquid one — which is also the coin an exchange's SOL/USDT pair means."""
+        seen: dict[str, CoinListing] = {}
+        for coin in coins:
+            if coin.symbol not in seen or coin.volume_24h > seen[coin.symbol].volume_24h:
+                seen[coin.symbol] = coin
+        if len(seen) < len(coins):
+            logger.info("Universe: dropped %d duplicate tickers (kept the most liquid of each)",
+                        len(coins) - len(seen))
+        return list(seen.values())
+
+    def _both_lanes_blocked(self) -> bool:
+        """True when a bear regime blocks spot AND whale, making a scan pointless.
+        A lane set to bypass the regime (or the only enabled lane) still fires,
+        so the skip has to check both."""
+        if self._regime_bullish:
+            return False
+        spot_live = self._cfg.spot_enabled and self._cfg.spot_bypass_regime
+        whale_live = self._cfg.whale_enabled and self._cfg.whale_bypass_regime
+        return not spot_live and not whale_live
+
     async def _refresh_regime(self) -> None:
         """Re-check the BTC regime and publish it for the API/dashboard. Called by
         the hourly scan AND every whale fast pass — the lane trades every 15 min,
         so an hour-stale verdict both blocks fresh bull windows and trades into
         expired ones (BTC regime flips mid-hour: 2026-07-02 reclaim)."""
-        self._regime_bullish = await self._market_regime_ok()
-        MARKET_STATE.regime_bullish = self._regime_bullish
+        # Fetch FIRST, then compare-and-set with no await in between. Reading
+        # was_bullish before the await made this a read-modify-write across a
+        # suspension point, and three callers share the flag — the 60s poller,
+        # the whale fast pass and the hourly scan. All three could sit in the BTC
+        # fetch holding was_bullish=False and each announce the same crossing on
+        # resume, which is how one flip was logged three times inside 114ms
+        # (2026-08-16 22:03:37). Everything below runs in a single scheduling
+        # slice, so exactly one caller can observe the transition.
+        bullish = await self._market_regime_ok()
+        was_bullish = self._regime_bullish
+        self._regime_bullish = bullish
+        MARKET_STATE.regime_bullish = bullish
+        if not self._regime_bullish and was_bullish:
+            logger.info(
+                "Market regime: BTC 4h trend unconfirmed (needs %d closed 4h candles "
+                "above the EMA-50, clear of the %.1f%% band) — spot %s; whales %s",
+                self._cfg.regime_confirm_candles, self._cfg.regime_hysteresis_pct,
+                "bypass (still trade)" if self._cfg.spot_bypass_regime
+                else "BLOCKED until BTC reclaims its 4h trend",
+                "bypass (still trade)" if self._cfg.whale_bypass_regime
+                else "BLOCKED until BTC reclaims its 4h trend",
+            )
         if self._regime_bullish:
             MARKET_STATE.whales_blocked = 0  # counts are per bear stretch
             MARKET_STATE.spot_blocked = 0
+            if not was_bullish:
+                self._request_flip_rescan()
+
+    def _request_flip_rescan(self) -> None:
+        """Wake the hourly loop on a bear -> bull flip, at most once per
+        rescan_min_interval_minutes.
+
+        The regime state itself (and so the dashboard) follows every poll — only
+        the expensive consequence is debounced. Polling every minute means BTC
+        hovering on its EMA-50 can cross repeatedly, and each crossing would
+        otherwise launch another full 2500-coin scan on top of the running one."""
+        since = time.monotonic() - self._last_flip_scan_at
+        limit = self._cfg.rescan_min_interval_minutes * 60
+        if since < limit:
+            logger.info(
+                "Regime flipped BEAR -> BULL, but a flip-triggered scan started "
+                "%.0f min ago — leaving it to the scheduled scan", since / 60,
+            )
+            return
+        logger.info("Regime flipped BEAR -> BULL — requesting an immediate full scan")
+        self._last_flip_scan_at = time.monotonic()
+        self._rescan_requested.set()
+
+    async def regime_loop(self) -> None:
+        """Poll the BTC regime on its own short cadence. This is one BTC candle
+        fetch, so it can run far more often than the whale sweep it used to ride
+        on — which keeps the dashboard honest and, more importantly, stops
+        entries within a minute of BTC losing its 4h trend instead of up to 15."""
+        while True:
+            await asyncio.sleep(self._cfg.regime_poll_seconds)
+            try:
+                await self._refresh_regime()
+            except Exception as e:
+                # Never let a dropped connection kill the poller: it is the only
+                # thing watching for the flip back to bull.
+                logger.warning("Regime poll failed: %s", e)
+
+    async def _wait_for_next_scan(self, delay: float) -> None:
+        """Sleep until the next scheduled scan, waking early if the regime turned
+        bullish while we waited."""
+        try:
+            await asyncio.wait_for(self._rescan_requested.wait(), timeout=delay)
+            logger.info("BTC reclaimed its 4h trend — starting a full scan now")
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            self._rescan_requested.clear()
 
     async def _market_regime_ok(self) -> bool:
         """Don't open new longs into a falling market: require BTC above its 4h EMA-50.
         If BTC data is unavailable, default to allowing entries."""
         if not self._cfg.regime_filter:
             return True
-        df = await self._market.fetch_htf_candles("BTC")
+        # Deeper history than the per-coin HTF filter: a 50-period EMA seeded off
+        # 100 candles (adjust=False seeds on the first value) reads ~$23 low on
+        # BTC — a +0.036% standing tilt toward BULL, larger than the deviations
+        # being judged. It converges by ~200. The per-coin fetch stays at
+        # htf_candle_limit so scan cost doesn't move.
+        df = await self._market.fetch_htf_candles(
+            "BTC", limit=self._cfg.regime_candle_limit)
         if df is None or len(df) < 50:
             return True
-        ema = df["close"].ewm(span=50, adjust=False).mean().iloc[-1]
-        ok = bool(df["close"].iloc[-1] > ema)
-        if not ok:
-            logger.info(
-                "Market regime: BTC below 4h EMA-50 — spot %s; whales %s",
-                "bypass (still trade)" if self._cfg.spot_bypass_regime
-                else "BLOCKED until BTC reclaims its 4h trend",
-                "bypass (still trade)" if self._cfg.whale_bypass_regime
-                else "BLOCKED until BTC reclaims its 4h trend",
-            )
-        return ok
+        ema = df["close"].ewm(span=50, adjust=False).mean()
+        band = max(0.0, self._cfg.regime_hysteresis_pct) / 100.0
+        n = max(1, int(self._cfg.regime_confirm_candles))
+
+        # The last row is the candle still FORMING, so its close is the live tick.
+        # Treating that as "BTC reclaimed its 4h trend" is what put 20 spot longs
+        # into a week-long downtrend on 2026-08-17: one candle in 42 had closed
+        # above the EMA. Bull must be earned by candles that actually closed.
+        closed_close = df["close"].iloc[-1 - n:-1]
+        closed_ema = ema.iloc[-1 - n:-1]
+        live, live_ema = float(df["close"].iloc[-1]), float(ema.iloc[-1])
+
+        # Asymmetric on purpose: slow to take risk ON, quick to take it OFF — so
+        # every bear test runs BEFORE the bull one. Confirmed closes above must
+        # not out-vote BTC breaking down live underneath them.
+        if live < live_ema * (1 - band):
+            return False        # decisive live break — don't wait up to 4h to cut
+        if bool((closed_close < closed_ema).any()):
+            return False        # a candle back below the line is not a trend
+        if bool((closed_close > closed_ema * (1 + band)).all()):
+            return True
+        # Inside the band with nothing decided: hold the standing verdict, which is
+        # what stops BTC resting on its EMA from flipping every 60s poll
+        # (2026-08-16 read BULL at 22:03:37 and BEAR at 22:04:37).
+        # Transitions are logged by _refresh_regime, not here: at a 60s poll this
+        # would otherwise print the same line 1440 times a day.
+        return self._regime_bullish
+
+    @staticmethod
+    def _daily_range_pct(df) -> Optional[float]:
+        """The coin's own 24h high-low range. Volatility decides whether a fixed
+        TP/SL is reachable at all, and it is not recoverable after the fact."""
+        if df is None or len(df) < 2:
+            return None
+        window = df.tail(96)  # 24h of 15m candles
+        low, high = float(window["low"].min()), float(window["high"].max())
+        return (high - low) / low * 100 if low > 0 else None
+
+    def _entry_context(self, coin: CoinListing, df=None, ind=None, whale=None,
+                       fg_value=None, fg_label: str = "") -> str:
+        """JSON snapshot of the conditions that produced an entry.
+
+        All of this is computed during the scan and then discarded. Without it a
+        losing trade can only ever be counted, never explained — which is how
+        87 closed trades ended up unanalysable."""
+        ctx = {
+            "regime": "bull" if self._regime_bullish else "bear",
+            "fg_value": fg_value,
+            "fg_label": fg_label or None,
+            "coin_volume_24h": coin.volume_24h,
+            "daily_range_pct": self._daily_range_pct(df),
+            "notional": self._cfg.notional_size,
+        }
+        if ind is not None:
+            ctx.update(rsi=ind.rsi_value, macd_hist=ind.macd_histogram,
+                       volume_score=ind.volume_score,
+                       divergence=bool(ind.divergence_score > 0),
+                       htf_uptrend=bool(ind.htf_uptrend))
+        if whale is not None:
+            ctx.update(whale_vol_ratio=whale.volume_ratio,
+                       whale_thrust_pct=whale.price_thrust_pct)
+        return json.dumps({k: v for k, v in ctx.items() if v is not None})
 
     def _can_open(self) -> bool:
-        """Gate an entry on the concurrent-position cap."""
-        return len(self._db.get_open_positions()) < self._cfg.max_open_positions
+        """Gate an entry on the concurrent-position cap. 0 (or less) = no cap."""
+        return bool(gates.position_cap_gate(self._cfg, len(self._db.get_open_positions())))
 
     def _in_cooldown(self, symbol: str) -> bool:
         """Freqtrade-style protection: after a loss, leave the coin alone for
         loss_cooldown_hours; after any close, pause reentry_cooldown_hours so the
         windowed detector can't instantly re-buy the same spike."""
-        last = self._db.last_exit(symbol)
-        if not last:
-            return False
-        outcome, exit_at = last
-        if exit_at is None:
-            return False
-        if exit_at.tzinfo is None:
-            exit_at = exit_at.replace(tzinfo=timezone.utc)
-        hours = (datetime.now(timezone.utc) - exit_at).total_seconds() / 3600
-        limit = self._cfg.loss_cooldown_hours if outcome == "loss" else self._cfg.reentry_cooldown_hours
-        if hours < limit:
-            logger.debug("  %s: in cooldown (%s %.1fh ago < %.1fh) — skipped",
-                         symbol, outcome, hours, limit)
-            return True
-        return False
+        g = gates.cooldown_gate(self._cfg, self._db.last_exit(symbol))
+        if not g:
+            logger.debug("  %s: in cooldown (%s) — skipped", symbol, g.detail)
+        return not g.passed
 
     async def _book_ok(self, coin: CoinListing) -> bool:
         """Order-book entry gate: veto on a wide spread (danger + slippage) or an
         ask-heavy book (depth imbalance precedes down-moves). Fails open."""
         if not self._cfg.book_gate:
             return True
-        stats = await self._market.fetch_book_stats(coin.symbol)
-        if stats is None:
-            return True
-        spread_pct, ratio = stats
-        if spread_pct > self._cfg.max_spread_pct:
-            logger.debug("  %s: spread %.2f%% > %.2f%% — book gate skip",
-                         coin.symbol, spread_pct, self._cfg.max_spread_pct)
-            return False
-        if ratio < self._cfg.min_bid_ask_ratio:
-            logger.debug("  %s: ask-heavy book (bid/ask depth %.2f < %.2f) — book gate skip",
-                         coin.symbol, ratio, self._cfg.min_bid_ask_ratio)
-            return False
-        return True
+        g = gates.book_gate(self._cfg, await self._market.fetch_book_stats(coin.symbol))
+        if not g:
+            logger.debug("  %s: %s — book gate skip", coin.symbol, g.detail)
+        return g.passed
 
 
     def _log_scan_summary(self, results: list[_CoinResult]) -> None:
@@ -169,21 +436,24 @@ class Scanner:
             return
 
         no_candles = sum(1 for r in results if r.status == "no_candles")
+        regime_blocked = sum(1 for r in results if r.status == "regime_blocked")
         scored = [r for r in results if r.status == "scored"]
         fired = sum(1 for r in results if r.fired)
         whale_fired = sum(1 for r in results if r.whale_fired)
 
+        # "no candles" and "blocked" are counted separately on purpose: they used
+        # to share a bucket, so a dead data feed and a bear regime produced the
+        # same line and only one of them is an outage.
         logger.info(
-            "Scan summary: %d processed | %d skipped (no candles) | %d passed "
-            "pre-filter (tech>=%.0f) | %d standard + %d whale signals fired%s",
-            len(results), no_candles, len(scored),
+            "Scan summary: %d processed | %d skipped (no candles) | %d blocked "
+            "(bear regime) | %d passed pre-filter (tech>=%.0f) | %d standard + "
+            "%d whale signals fired",
+            len(results), no_candles, regime_blocked, len(scored),
             self._cfg.pre_filter_threshold, fired, whale_fired,
-            f" | {MARKET_STATE.spot_blocked} spot blocked (bear regime)"
-            if not self._regime_bullish and MARKET_STATE.spot_blocked else "",
         )
 
         ranked = sorted(
-            (r for r in results if r.status != "no_candles"),
+            (r for r in results if r.status in ("below_pre_filter", "scored")),
             key=lambda r: max(r.technical_score, r.total_score),
             reverse=True,
         )[:5]
@@ -215,20 +485,23 @@ class Scanner:
 
         # --- Standard strategy: indicators + higher-timeframe confluence ---
         if not self._cfg.spot_enabled:
+            result.status = "spot_disabled"
             return result  # benched: no measured net-positive spot config yet
         # Spot obeys the BTC regime like whale does (2026-08-01): live data showed
         # bear-regime entries losing on average even past a raised score bar, and
         # the score itself doesn't predict outcome — so a higher bar wasn't the
         # fix. Gate here, before the HTF fetch/indicator compute, to skip the
         # network+CPU cost too, not just the entry.
-        if not self._regime_bullish and not self._cfg.spot_bypass_regime:
+        if not gates.regime_gate(self._cfg, self._regime_bullish, "spot"):
             MARKET_STATE.spot_blocked += 1
-            logger.debug("  %s: bear regime (BTC below 4h EMA-50) — spot skipped", coin.symbol)
+            result.status = "regime_blocked"
+            logger.debug("  %s: bear regime (BTC 4h trend unconfirmed) — spot skipped", coin.symbol)
             return result
         df_htf = await self._market.fetch_htf_candles(coin.symbol)
         ind_scores = compute_indicators(df, self._cfg, df_htf=df_htf)
         result.technical_score = ind_scores.total
-        if ind_scores.total < self._cfg.pre_filter_threshold:
+        if not gates.score_gate(self._cfg, ind_scores.total,
+                                self._cfg.pre_filter_threshold, "pre-filter"):
             result.status = "below_pre_filter"
             logger.debug(
                 "  %s: tech=%.1f < pre-filter %.0f — skipped (no news/Gemini call)",
@@ -241,7 +514,8 @@ class Scanner:
 
         # Only spend a grounded news call on coins that would fire on technicals AND that
         # we can open — keeps Gemini to a few candidates per scan (free-tier safe).
-        if ind_scores.total < self._cfg.signal_threshold:
+        if not gates.score_gate(self._cfg, ind_scores.total,
+                                self._cfg.signal_threshold, "signal"):
             return result
         if not self._can_open() or self._in_cooldown(coin.symbol):
             return result
@@ -262,9 +536,10 @@ class Scanner:
             total_score, catalyst.reason,
         )
 
-        if total_score < self._cfg.signal_threshold:
+        if not gates.score_gate(self._cfg, total_score,
+                                self._cfg.signal_threshold, "signal"):
             return result  # bearish news vetoed it
-        if catalyst.catalyst == "migration":
+        if not gates.migration_gate(self._cfg, catalyst):
             logger.debug("  %s: migration risk — skipped", coin.symbol)
             return result
 
@@ -291,7 +566,10 @@ class Scanner:
             self._cfg, self._cfg.take_profit_pct, self._cfg.stop_loss_pct)
         self._trader.open_position(event, entry_price,
                                    self._market.exchange_id_for(coin.symbol),
-                                   stop_pct=sl_pct, take_profit_pct=tp_pct)
+                                   stop_pct=sl_pct, take_profit_pct=tp_pct,
+                                   entry_context=self._entry_context(
+                                       coin, df=df, ind=ind_scores,
+                                       fg_value=fg_value, fg_label=fg_label))
         result.fired = True
         log_entry(
             "spot", coin.symbol, entry_price,
@@ -338,28 +616,28 @@ class Scanner:
         # net-negative OOS — longing into downtrends). bypass_regime=true restores the
         # old always-trade behavior. A regime skip is logged and counted: a week of
         # "no positions" must be explainable from the log and the dashboard.
-        if not self._regime_bullish and not self._cfg.whale_bypass_regime:
+        if not gates.regime_gate(self._cfg, self._regime_bullish, "whale"):
             MARKET_STATE.whales_blocked += 1
-            logger.info("Whale %s skipped — bear regime (BTC below 4h EMA-50)", coin.symbol)
+            logger.info("Whale %s skipped — bear regime (BTC 4h trend unconfirmed)", coin.symbol)
             return False
         # Always respect the concurrent-position cap.
         if not self._can_open():
             return False
         # Correlated-exposure cap: concurrent whale longs are one market-beta bet
         # overnight (12 open -> one dip = six stop-outs). Skips are logged so the
-        # cap's cost in missed winners is countable later.
-        if self._db.count_open_positions("whale") >= self._cfg.whale_max_open:
+        # cap's cost in missed winners is countable later. 0 = uncapped
+        # (2026-08-17), matching max_open_positions.
+        if not gates.whale_cap_gate(self._cfg, self._db.count_open_positions("whale")):
             logger.info("Whale cap %d reached — %s skipped",
                         self._cfg.whale_max_open, coin.symbol)
             return False
         # Liquidity floor: whales measured net NEGATIVE on thin coins (slippage >
         # edge) and net positive on liquid ones — only ride coins this liquid.
-        if coin.volume_24h < self._cfg.whale_min_coin_volume_24h:
+        if not gates.liquidity_gate(self._cfg, coin.volume_24h):
             return False
         # Tokenized equities (xStocks etc.) trade on stock-market hours and equity
         # beta — crypto momentum logic misreads them (live: CRCLX -4.04%).
-        name = coin.name.lower()
-        if "xstock" in name or "tokenized stock" in name or "tokenized equity" in name:
+        if not gates.tokenized_gate(self._cfg, coin.name):
             return False
         if self._in_cooldown(coin.symbol):
             return False
@@ -367,26 +645,27 @@ class Scanner:
             return False
         # Taker-flow gate: a spike on seller-dominated tape is distribution, not
         # accumulation. None (no data off-Binance) fails open.
-        share = await self._market.fetch_taker_buy_share(coin.symbol)
-        if share is not None and share < self._cfg.whale_min_taker_buy_share:
-            logger.debug("  %s: taker buy share %.0f%% < %.0f%% — seller-led spike, skipped",
-                         coin.symbol, share * 100, self._cfg.whale_min_taker_buy_share * 100)
+        g = gates.taker_share_gate(
+            self._cfg, await self._market.fetch_taker_buy_share(coin.symbol))
+        if not g:
+            logger.debug("  %s: %s — seller-led spike, skipped", coin.symbol, g.detail)
             return False
         # Funding-rate crowding veto: a spike whose perp longs are already paying
         # extreme funding is the one that gets flushed. None (no perp) fails open.
-        funding = await self._market.fetch_funding_rate(coin.symbol)
-        if funding is not None and funding >= self._cfg.whale_max_funding_rate:
-            logger.debug("  %s: funding %.3f%%/8h >= %.3f%% — crowded longs, skipped",
-                         coin.symbol, funding * 100, self._cfg.whale_max_funding_rate * 100)
+        g = gates.funding_gate(
+            self._cfg, await self._market.fetch_funding_rate(coin.symbol))
+        if not g:
+            logger.debug("  %s: %s — crowded longs, skipped", coin.symbol, g.detail)
             return False
         # Cheap check first: skip a coin already extended over 7 days (RIF/DASH pattern).
-        change_7d = await self._gecko.fetch_change_7d(coin.symbol, coin.name)
-        if change_7d is not None and change_7d >= self._cfg.pumped_skip_pct:
-            logger.debug("  %s: +%.0f%%/7d already pumped — whale skipped", coin.symbol, change_7d)
+        g = gates.pumped_gate(
+            self._cfg, await self._gecko.fetch_change_7d(coin.symbol, coin.name))
+        if not g:
+            logger.debug("  %s: %s — whale skipped", coin.symbol, g.detail)
             return False
         # Grounded news gate: veto on bearish news or an ongoing migration/rebrand.
         catalyst = self._news.grounded_catalyst(coin.symbol, coin.name)
-        if catalyst.sentiment < self._cfg.news_veto_threshold or catalyst.catalyst == "migration":
+        if not gates.whale_news_gate(self._cfg, catalyst):
             logger.debug("  %s: whale vetoed by news (sentiment=%.0f catalyst=%s) — %s",
                          coin.symbol, catalyst.sentiment, catalyst.catalyst, catalyst.reason)
             return False
@@ -427,7 +706,10 @@ class Scanner:
             self._cfg, self._cfg.whale_take_profit_pct, self._cfg.whale_stop_loss_pct)
         self._trader.open_position(event, entry_price,
                                    self._market.exchange_id_for(coin.symbol),
-                                   stop_pct=sl_pct, take_profit_pct=tp_pct)
+                                   stop_pct=sl_pct, take_profit_pct=tp_pct,
+                                   entry_context=self._entry_context(
+                                       coin, df=df, whale=whale,
+                                       fg_value=fg_value, fg_label=fg_label))
         # Indicators aren't part of the whale decision — computed here purely so
         # the entry log has RSI/MACD alongside every fired position, not just spot's.
         df_htf = await self._market.fetch_htf_candles(coin.symbol)
@@ -456,6 +738,13 @@ class Scanner:
         up to 45 min late, so many expire unfilled. Same gates, just on time."""
         # Fresh regime verdict for THIS pass — the hourly scan's is up to 1h stale.
         await self._refresh_regime()
+        # That verdict is the only reason to run this lane in a bear market: it is
+        # how the flip back to bull gets noticed (and it costs one BTC fetch).
+        # Sweeping hundreds of liquid coins afterwards cannot open anything.
+        if not self._regime_bullish and not self._cfg.whale_bypass_regime:
+            logger.debug("Whale fast pass: bear regime — %d liquid coins not swept",
+                         len(self._liquid_coins))
+            return 0
         opened = 0
         for coin in self._liquid_coins:
             try:
@@ -513,4 +802,4 @@ class Scanner:
                 )
             else:
                 logger.info("Scan cycle done in %.0fs — next scan in %.0fs", elapsed, delay)
-                await asyncio.sleep(delay)
+                await self._wait_for_next_scan(delay)

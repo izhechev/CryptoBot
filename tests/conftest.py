@@ -32,7 +32,6 @@ def cfg() -> Config:
         whale_take_profit_pct=15.0,
         whale_stop_loss_pct=7.0,
         whale_max_hold_hours=12,
-        tracking_interval_seconds=60,
         tracking_timeframe="1m",
         tracking_candle_limit=60,
         cmc_api_key="test_cmc",
@@ -40,3 +39,31 @@ def cfg() -> Config:
         telegram_bot_token="test_token",
         telegram_chat_id="test_chat_id",
     )
+
+
+@pytest.fixture(autouse=True)
+def _never_write_the_live_journal(tmp_path, monkeypatch):
+    """Keep the append-only trade journal out of reach of the test suite.
+
+    Tracker's journal_path defaults to the REAL trade_journal.csv in the working
+    directory, and that default binds at import time — so any test closing a
+    position without overriding it appends a fixture trade to live history. One
+    `pytest` run on 2026-08-17 put 12 fake closes (entry_price 100, symbols
+    GRD/TRL/FADE/SCL) into it. That file is the record a database wipe cannot
+    take back, and nothing here is allowed to touch it. Explicit tmp paths pass
+    straight through, so the test that verifies journalling still works.
+    """
+    import os
+    import backend.trade_journal as tj
+    import backend.tracker as tracker_mod
+
+    real = tj.append_closed
+    redirected = str(tmp_path / "default-journal.csv")
+
+    def guarded(pos, cfg=None, signal=None, path=tj.DEFAULT_PATH, regime_exit=""):
+        if os.path.abspath(path) == os.path.abspath(tj.DEFAULT_PATH):
+            path = redirected
+        return real(pos, cfg=cfg, signal=signal, path=path, regime_exit=regime_exit)
+
+    monkeypatch.setattr(tj, "append_closed", guarded)
+    monkeypatch.setattr(tracker_mod, "append_closed", guarded, raising=False)

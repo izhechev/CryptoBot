@@ -35,7 +35,6 @@ class Config:
     whale_take_profit_pct: float
     whale_stop_loss_pct: float
     whale_max_hold_hours: int
-    tracking_interval_seconds: int
     tracking_timeframe: str
     tracking_candle_limit: int
     cmc_api_key: str
@@ -62,6 +61,48 @@ class Config:
     whale_roi: list = field(default_factory=lambda: [(180.0, 2.0), (60.0, 4.0), (20.0, 7.0), (0.0, 15.0)])
     max_open_positions: int = 6        # cap correlated concurrent exposure
     regime_filter: bool = True         # skip NEW entries when BTC is below its 4h trend
+    # Where the scan universe comes from: "coingecko" (paged /coins/markets) or
+    # "cmc". Defaults to cmc so existing callers/tests keep their behavior;
+    # config.yaml selects coingecko for the live bot.
+    universe_source: str = "cmc"
+    # How long a fetched universe is reused. CoinGecko's Demo tier allows 10k
+    # calls/month and one full universe costs ~11, so hourly refreshes alone
+    # would spend ~8k of it. The listing barely moves in a few hours.
+    universe_refresh_hours: float = 6.0
+    # How often the BTC regime is re-checked. One BTC candle fetch, so it runs on
+    # its own cadence rather than riding the 15-min whale sweep.
+    regime_poll_seconds: float = 60.0
+    # Minimum gap between full scans triggered by a bear -> bull flip. The regime
+    # state (and the dashboard) still follows every poll; this only stops BTC
+    # flapping across its EMA-50 from launching back-to-back full scans.
+    rescan_min_interval_minutes: float = 10.0
+    # Dead band around the EMA-50, in percent, before the regime verdict changes.
+    # The verdict is read off the still-forming 4h candle, so its close is the live
+    # BTC tick; at a 60s poll a bare `close > ema` flips every poll while BTC rests
+    # on the line (2026-08-16 22:03 BULL -> 22:04 BEAR). Inside the band the
+    # previous verdict stands. 0 restores the old knife-edge behavior.
+    regime_hysteresis_pct: float = 0.4
+    # Candles fetched for the BTC regime EMA-50. Deeper than htf_candle_limit: at
+    # 100 the EMA seeds ~$23 low on BTC (+0.036% tilt toward BULL), converging by
+    # ~200. Only this one fetch pays the cost; per-coin HTF stays cheap.
+    regime_candle_limit: int = 250
+    # Closed 4h candles that must sit above the EMA (clear of the band) before the
+    # regime turns bull. 1 = any single close; 2+ demands persistence.
+    regime_confirm_candles: int = 2
+    # Tokenized stocks track an equity: frozen outside market hours, and a crypto-
+    # sized TP is a rare daily move for the underlying. Matched on the product
+    # wording only — 'Ondo' alone would also drop ONDO, a real tradable token.
+    exclude_tokenized_equities: bool = True
+    tokenized_equity_markers: list = field(default_factory=lambda: [
+        "tokenized stock", "tokenized equity", "xstock", "bstocks",
+    ])
+    # Dollar pegs can't reach a take-profit; they just hold a slot until timeout.
+    exclude_stablecoins: bool = True
+    stablecoin_symbols: list = field(default_factory=lambda: [
+        "USDT", "USDC", "USDE", "USDS", "DAI", "USDP", "TUSD", "BUSD", "FDUSD",
+        "USDD", "PYUSD", "GUSD", "LUSD", "FRAX", "SUSD", "USDX", "USD1", "USDG",
+        "USDY", "RLUSD", "EURS", "EURT", "EURC", "EURI", "XSGD", "USDL", "USDF",
+    ])
     whale_bypass_regime: bool = True   # whales (short, self-trend-filtered) trade in any market
     spot_bypass_regime: bool = False   # spot obeys the BTC regime like whale does (2026-08-01:
                                        # live data showed bear-regime spot entries lose on
@@ -231,6 +272,20 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         whale_roi=_parse_roi(whale.get("roi"), float(whale.get("take_profit_pct", 15.0))),
         max_open_positions=int(scan.get("max_open_positions", 6)),
         regime_filter=bool(scan.get("regime_filter", True)),
+        universe_source=str(scan.get("universe_source", "cmc")).lower(),
+        universe_refresh_hours=float(scan.get("universe_refresh_hours", 6.0)),
+        regime_poll_seconds=float(scan.get("regime_poll_seconds", 60.0)),
+        rescan_min_interval_minutes=float(scan.get("rescan_min_interval_minutes", 10.0)),
+        regime_hysteresis_pct=float(scan.get("regime_hysteresis_pct", 0.4)),
+        regime_candle_limit=int(scan.get("regime_candle_limit", 250)),
+        regime_confirm_candles=int(scan.get("regime_confirm_candles", 2)),
+        exclude_tokenized_equities=bool(scan.get("exclude_tokenized_equities", True)),
+        tokenized_equity_markers=list(
+            scan.get("tokenized_equity_markers")
+            or Config.__dataclass_fields__["tokenized_equity_markers"].default_factory()),
+        exclude_stablecoins=bool(scan.get("exclude_stablecoins", True)),
+        stablecoin_symbols=list(scan.get("stablecoin_symbols")
+                                or Config.__dataclass_fields__["stablecoin_symbols"].default_factory()),
         whale_bypass_regime=bool(whale.get("bypass_regime", True)),
         spot_bypass_regime=bool(scoring.get("bypass_regime", False)),
         pumped_skip_pct=float(scoring.get("pumped_skip_pct", 30.0)),
@@ -270,7 +325,6 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         whale_max_open=int(whale.get("max_open", 6)),
         assumed_cost_pct=float(report.get("assumed_cost_pct", 0.5)),
         whale_max_funding_rate=float(whale.get("max_funding_rate", 0.001)),
-        tracking_interval_seconds=int(tracking.get("interval_seconds", 60)),
         tracking_timeframe=tracking.get("candle_timeframe", "1m"),
         tracking_candle_limit=int(tracking.get("candle_limit", 60)),
         price_feed_seconds=float(tracking.get("price_feed_seconds", 1.0)),

@@ -34,7 +34,7 @@ async def main() -> None:
     tracker = Tracker(cfg, db)
     tracker.set_notifier(notifier)
 
-    app = create_app(db, cfg)
+    app = create_app(db, cfg, scanner=scanner)
     notifier.set_ws_broadcast(app.state.broadcast)
 
     server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="warning"))
@@ -43,6 +43,7 @@ async def main() -> None:
     await asyncio.gather(
         scanner.loop(),
         scanner.whale_loop(),
+        scanner.regime_loop(),
         tracker.loop(),
         daily_report_loop(db, notifier, cost_pct=cfg.assumed_cost_pct),
         position_snapshot_loop(cfg, db),
