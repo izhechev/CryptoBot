@@ -140,3 +140,36 @@ async def test_open_position_attaches_last_known_price(app, db):
     row = next(r for r in resp.json() if r["coin_symbol"] == "ZEC")
     assert row["current_price"] == pytest.approx(525.46)
     assert row["pnl_pct"] == pytest.approx(-0.566, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_open_positions_cannot_hide_closed_ones(app, db):
+    """2026-08-18: /positions returned get_all_positions(limit=100) ordered by
+    entry_at. With 139 open positions every closed trade fell outside the window —
+    the dashboard showed 3 closed while /stats and Telegram said 9. Whatever the
+    size of the open book, closed trades must still come back."""
+    from datetime import datetime, timezone, timedelta
+    from backend.storage import Signal, Position
+
+    def add(symbol, hours_ago, closed):
+        sig = db.save_signal(Signal(
+            id=None, coin_symbol=symbol, coin_name=symbol, total_score=80.0,
+            technical_score=70.0, news_score=60.0, gemini_explanation="x",
+            fired_at=datetime.now(timezone.utc), strategy="standard"))
+        pos = db.save_position(Position(
+            id=None, signal_id=sig.id, coin_symbol=symbol, entry_price=1.0,
+            entry_at=datetime.now(timezone.utc) - timedelta(hours=hours_ago),
+            exit_price=None, exit_at=None, outcome=None, pnl_pct=None,
+            strategy="standard"))
+        if closed:
+            db.close_position(pos.id, 1.1, datetime.now(timezone.utc), "win", 10.0)
+        return pos
+
+    add("OLDWIN", hours_ago=200, closed=True)      # oldest by entry_at
+    for i in range(130):                            # bury it
+        add(f"OPEN{i}", hours_ago=1, closed=False)
+
+    data = (await _get(app, "/positions")).json()
+
+    assert any(p["coin_symbol"] == "OLDWIN" and p["outcome"] == "win" for p in data), \
+        "a closed trade was hidden by the open book"
