@@ -424,3 +424,66 @@ async def test_closing_a_position_appends_it_to_the_journal(tracker, db, tmp_pat
     assert len(lines) == 2                     # header + the closed trade
     assert lines[1].split(",")[1] == "SOL"
     assert lines[1].split(",")[3] == "win"
+
+
+@pytest.mark.asyncio
+async def test_a_hung_cycle_cannot_stop_the_tracker_forever(tracker, db):
+    """2026-08-18: the tracker stopped checking stop-losses for 14 HOURS while the
+    scanner kept opening positions, reaching 136 open with no TP/SL evaluated.
+
+    Nothing crashed. It was blocked inside a websocket broadcast to a browser tab
+    that had gone away without closing — send_json on a half-open socket never
+    raises, it just never returns, so the `except Exception` around the cycle was
+    never reached and the loop never got back to its sleep.
+
+    A cycle that wedges must be abandoned, loudly, and the next one must still
+    run. This is the guard that means a single bad client can never again silence
+    the component that enforces stops."""
+    import asyncio as _asyncio
+
+    tracker._cfg.price_feed_seconds = 0.01
+    tracker._cfg.tracker_cycle_timeout_seconds = 0.05
+    calls = 0
+
+    async def hangs_forever():
+        nonlocal calls
+        calls += 1
+        await _asyncio.Event().wait()   # never returns, never raises
+
+    tracker.run_once = hangs_forever
+    task = _asyncio.create_task(tracker.loop())
+    await _asyncio.sleep(0.4)
+    task.cancel()
+
+    assert calls >= 2, f"loop stopped after {calls} cycle(s) — a hung cycle killed it"
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_websocket_client_does_not_block_the_broadcast(monkeypatch):
+    """The other half of the same failure: one unresponsive client must not stop
+    the others receiving, nor hold up the caller."""
+    import asyncio as _asyncio
+    import backend.api as api_mod
+    from backend.api import _WSManager
+
+    monkeypatch.setattr(api_mod, "_WS_SEND_TIMEOUT", 0.05)  # don't wait the real 5s
+    mgr = _WSManager()
+
+    class Stalled:
+        async def send_json(self, msg):
+            await _asyncio.Event().wait()
+
+    class Healthy:
+        def __init__(self):
+            self.got = []
+
+        async def send_json(self, msg):
+            self.got.append(msg)
+
+    healthy = Healthy()
+    mgr._connections = [Stalled(), healthy]
+
+    await _asyncio.wait_for(mgr.broadcast({"type": "prices"}), timeout=5)
+
+    assert healthy.got == [{"type": "prices"}]
+    assert len(mgr._connections) == 1      # the stalled one is dropped

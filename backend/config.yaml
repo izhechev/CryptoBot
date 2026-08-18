@@ -182,6 +182,11 @@ tracking:
   # the observed price rather than the stop level, so a fast move through the stop
   # between two cycles still overshoots.
   price_feed_seconds: 300
+  # Hard ceiling on ONE tracker cycle. On 2026-08-18 a cycle blocked forever in a
+  # websocket send to a browser tab that had gone away, and the loop never came
+  # back: 14 hours with no TP/SL checked while the scanner kept opening, reaching
+  # 136 open positions. Exceeding this abandons the cycle and logs loudly.
+  cycle_timeout_seconds: 120
   candle_timeframe: "1m"        # timeframe whose high/low is scanned for TP/SL touches
   candle_limit: 60
 

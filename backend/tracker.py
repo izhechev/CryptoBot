@@ -9,6 +9,8 @@ from backend.paper_trading import PaperTrading, TradeOutcome
 from backend.signals import SignalEngine
 from backend.format_utils import fmt_price
 from backend.notify import Notifier
+from backend.market_state import MARKET_STATE
+from backend.trade_journal import append_closed, DEFAULT_PATH as JOURNAL_DEFAULT_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -18,13 +20,15 @@ class Tracker:
     in one batched call per cycle, then checks TP/SL/timeout and pushes live prices
     to the dashboard. Exchanges are not used here — only CoinGecko."""
 
-    def __init__(self, cfg: Config, db: Storage):
+    def __init__(self, cfg: Config, db: Storage,
+                 journal_path: str = JOURNAL_DEFAULT_PATH):
         self._cfg = cfg
         self._db = db
         self._gecko = GeckoClient(cfg.gecko_api_key)
         self._trader = PaperTrading(cfg, db)
         self._signals = SignalEngine(cfg, db)
         self._notifier: Optional[Notifier] = None
+        self._journal_path = journal_path
 
     def set_notifier(self, notifier: Notifier) -> None:
         self._notifier = notifier
@@ -91,6 +95,12 @@ class Tracker:
                 if price > (pos.peak_price or pos.entry_price):
                     pos.peak_price = price
                     self._db.update_position_peak(pos.id, price)
+                # Mirror image, for MAE: how far the trade went AGAINST us. Only
+                # the pair makes "was the stop too wide / the target too far?"
+                # answerable after the fact.
+                if price < (pos.trough_price or pos.entry_price):
+                    pos.trough_price = price
+                    self._db.update_position_trough(pos.id, price)
             except Exception as e:
                 logger.warning("Error tracking %s: %s", pos.coin_symbol, e)
 
@@ -139,7 +149,23 @@ class Tracker:
         self._trader.close_position(pos, exit_price, outcome)
         logger.info("Closed %s [%s] outcome=%s exit=%s",
                     pos.coin_symbol, pos.strategy, outcome.value, fmt_price(exit_price))
+        self._journal(pos)
         await self._notify_closed(pos)
+
+    def _journal(self, pos: Position) -> None:
+        """Append the finished trade to the durable record. Read the position back
+        from the DB first: close_position writes exit_price/exit_at/outcome/pnl
+        there, and journalling the stale in-memory copy would file every trade as
+        still-open with no result."""
+        closed = next((p for p in self._db.get_all_positions(limit=100)
+                       if p.id == pos.id), pos)
+        signal = None
+        try:
+            signal = self._db.get_signal(closed.signal_id)
+        except Exception:
+            pass  # entry scores are a nice-to-have; the close itself is not
+        append_closed(closed, cfg=self._cfg, signal=signal, path=self._journal_path,
+                      regime_exit="bull" if MARKET_STATE.regime_bullish else "bear")
 
     async def _notify_closed(self, pos: Position) -> None:
         if not self._notifier:
@@ -151,7 +177,19 @@ class Tracker:
     async def loop(self) -> None:
         while True:
             try:
-                await self.run_once()
+                # Hard bound on a cycle. The `except` below only catches a cycle
+                # that FAILS; one that simply never returns used to stop the loop
+                # dead, silently (2026-08-18: 14h with no TP/SL checks on 136 open
+                # positions, blocked in a websocket send to a vanished browser
+                # tab). This component enforces the stops — it does not get to
+                # stop running.
+                await asyncio.wait_for(
+                    self.run_once(), timeout=self._cfg.tracker_cycle_timeout_seconds)
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Tracker cycle exceeded %.0fs and was abandoned — NO stop-loss "
+                    "or take-profit was checked this cycle. Retrying in %.0fs.",
+                    self._cfg.tracker_cycle_timeout_seconds, self._cfg.price_feed_seconds)
             except Exception as e:
                 logger.error("Tracker cycle failed: %s", e)
             await asyncio.sleep(self._cfg.price_feed_seconds)
