@@ -173,3 +173,34 @@ async def test_open_positions_cannot_hide_closed_ones(app, db):
 
     assert any(p["coin_symbol"] == "OLDWIN" and p["outcome"] == "win" for p in data), \
         "a closed trade was hidden by the open book"
+
+
+@pytest.mark.asyncio
+async def test_stats_report_the_dead_rate(app, db):
+    """Stagnation cuts are the dominant outcome for spot (backtest: ~80% of trades
+    at the live entry bar), so "how many died?" is the number that says whether
+    entries are worth taking. It was invisible — dead trades were lumped into
+    wins/losses by P&L sign, which hides a book full of trades going nowhere."""
+    from datetime import datetime, timezone
+
+    def closed(symbol, outcome, pnl):
+        sig = db.save_signal(Signal(
+            id=None, coin_symbol=symbol, coin_name=symbol, total_score=80.0,
+            technical_score=70.0, news_score=60.0, gemini_explanation="x",
+            fired_at=datetime.now(timezone.utc), strategy="standard"))
+        pos = db.save_position(Position(
+            id=None, signal_id=sig.id, coin_symbol=symbol, entry_price=1.0,
+            entry_at=datetime.now(timezone.utc), exit_price=None, exit_at=None,
+            outcome=None, pnl_pct=None, strategy="standard"))
+        db.close_position(pos.id, 1.0 + pnl / 100, datetime.now(timezone.utc), outcome, pnl)
+
+    closed("A", "dead", -0.5)
+    closed("B", "dead", +0.3)      # a dead trade can still end marginally green
+    closed("C", "win", +5.0)
+    closed("D", "loss", -8.0)
+
+    data = (await _get(app, "/stats")).json()
+
+    assert data["standard"]["dead"] == 2
+    assert data["standard"]["dead_rate"] == 50.0
+    assert data["overall"]["dead"] == 2

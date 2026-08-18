@@ -131,7 +131,10 @@ exits:
   # it does not give spot a real edge. Thin OOS sample (15tr) — watch live.
   standard_dead_exit_mode: stagnation
   standard_stagnation_hours: 8
-  standard_stagnation_min_peak_pct: 1.5
+  # Aligned to the take-profit (1.0) on 2026-08-18. Above the TP it is dead code:
+  # a trade that peaks past the TP has already exited as a win, so the only trades
+  # this can reach are those that never touched it.
+  standard_stagnation_min_peak_pct: 1.0
   atr_stop_multiplier: 2.5      # stop distance = 2.5 x ATR% (sweep: 2.5 beat 1.5 in every
                                 # spot row; whales were indifferent across 1.5-2.5)
   stop_pct_min: 4.0
@@ -160,7 +163,19 @@ paper_trading:
   # 10/10) and the least-bad net. Chosen per the user's win-rate-first directive;
   # it does NOT make spot net-positive — the real lever is a higher entry bar
   # (or spot off). SL near-irrelevant (stagnation/timeout fire first); 7 edged 10.
-  take_profit_pct: 2.0
+  # 2026-08-18, user directive "better win rate even if it is 1% wins": 2.0 -> 1.0.
+  # Sub-2% TPs were never in the sweep grid; measured on 37 coins x 21d they are
+  # the only lever that moves BOTH numbers the user cares about:
+  #     TP 2.0 -> 42% win, 80% dead      (previous)
+  #     TP 1.0 -> 47% win, 64% dead      (this)
+  #     TP 0.5 -> 62% win, 40% dead      (one line away if you want more)
+  # A trade that reaches +1% now books a win instead of drifting to the 8h
+  # stagnation cut, which is what "avoid entries that end up dead" needs.
+  # HONEST CAVEAT, measured: this does NOT make spot profitable. Round-trip cost
+  # is ~1.26%, so an average win of ~+0.73% still loses money. Gross expectancy is
+  # ~0 at EVERY TP tested (-0.02% to -0.13%) — there is no edge here, only a
+  # relabelling of outcomes. Net/trade stays ~-1.3%.
+  take_profit_pct: 1.0
   stop_loss_pct: 7.0
   max_hold_hours: 24
   notional_size: 1000.0
@@ -218,7 +233,17 @@ whale:
                                 # Trades less often (bull regimes only) but profitably.
   min_coin_volume_24h: 10000000 # whales only ride coins with >=$10M daily volume (10/12
                                 # combos green there; thin mid-caps lose to slippage)
-  volume_multiple: 4.0          # holdout winner chase+obey+4.0 = +1.52%/trade, 75% win OOS
+  # 2026-08-18 sweep (113 liquid coins, 30d, 9d holdout), win-rate-first directive:
+  # every one of 24 combos was net-negative, but the spread is large and the live
+  # setting sat in the bottom three:
+  #     chase  + 4.0  ->  26% win, -3.97%/trade   (was live)
+  #     chase  + 3.0  ->  32% win, -2.68%/trade
+  #     retest + 3.0  ->  45% win, -0.43%/trade   (this)
+  # CAVEAT: the June sweep picked chase on a different 30d window, and the best
+  # config here still degrades out-of-sample (-4.35%, 9 trades). This is
+  # less-bad, not good — whale gross expectancy is -1.55% BEFORE costs, i.e. the
+  # detector picks spikes that revert rather than run.
+  volume_multiple: 3.0
                                 # (n=8, thin) vs 3.0's +0.40% (n=13). 4.0 = pickier spikes.
   min_taker_buy_share: 0.55     # spike window must be buyer-dominated (taker buys >= 55% of
                                 # volume on Binance-routed coins; seller-led spikes = distribution)
@@ -226,7 +251,7 @@ whale:
                                 # hourly; this catches spikes at their confirmation candle)
   max_funding_rate: 0.001       # veto if the coin's perp funding >= 0.1%/8h — crowded longs
                                 # precede deleveraging flushes (neutral funding is ~0.01%)
-  entry_mode: chase             # 2026-06-17 SWEEP holdout winner used chase+obey-regime
+  entry_mode: retest            # 2026-08-18 sweep: retest beat chase in EVERY pairing
                                 # (retest+obey had ~1 trade — untested). "chase" = buy at
                                 # market on the confirmed spike. Revert to "retest" if live
                                 # results don't hold (thin OOS sample).
