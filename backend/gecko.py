@@ -1,9 +1,17 @@
+import asyncio
 import logging
 from typing import Optional
 import aiohttp
 
+from backend.cmc_client import CoinListing
+
 logger = logging.getLogger(__name__)
 _BASE = "https://api.coingecko.com/api/v3"
+_UNIVERSE_PAGE_SIZE = 250  # CoinGecko's max per_page on /coins/markets
+# /coins/markets rejects more than this many `symbols` with a 400. Exceeding it
+# returned NO prices at all, so the whole feed died the moment open positions
+# passed 50 (2026-08-18: 14h with no TP/SL evaluated on 138 positions).
+_MAX_SYMBOLS_PER_REQUEST = 50
 
 
 class GeckoClient:
@@ -21,19 +29,41 @@ class GeckoClient:
             h["x-cg-demo-api-key"] = self._api_key
         return h
 
-    async def _markets(self, symbols: list[str]) -> list:
+    async def _markets_batch(self, symbols: list[str]) -> list:
+        """One /coins/markets lookup for at most _MAX_SYMBOLS_PER_REQUEST symbols."""
         params = {"vs_currency": "usd", "order": "market_cap_desc",
                   "price_change_percentage": "7d",
-                  "symbols": ",".join(sorted({s.lower() for s in symbols}))}
-        try:
-            async with aiohttp.ClientSession() as s:
-                async with s.get(f"{_BASE}/coins/markets", headers=self._headers(), params=params) as r:
-                    r.raise_for_status()
-                    data = await r.json()
-        except Exception as e:
-            logger.debug("CoinGecko lookup failed for %s: %s", symbols, e)
-            return []
+                  "symbols": ",".join(symbols)}
+        async with aiohttp.ClientSession() as s:
+            async with s.get(f"{_BASE}/coins/markets", headers=self._headers(), params=params) as r:
+                r.raise_for_status()
+                data = await r.json()
         return data if isinstance(data, list) else []
+
+    async def _markets(self, symbols: list[str]) -> list:
+        """Look up many symbols, in batches under CoinGecko's per-request cap.
+
+        A batch that fails is logged at WARNING and skipped rather than losing the
+        whole feed: with one request for everything, a single 400 meant every
+        position lost its price. It was logged at DEBUG, so at the bot's INFO
+        level a totally dead price feed produced no output whatsoever."""
+        wanted = sorted({s.lower() for s in symbols})
+        rows: list = []
+        failed = 0
+        for i in range(0, len(wanted), _MAX_SYMBOLS_PER_REQUEST):
+            batch = wanted[i:i + _MAX_SYMBOLS_PER_REQUEST]
+            try:
+                rows.extend(await self._markets_batch(batch))
+            except Exception as e:
+                failed += 1
+                logger.warning("CoinGecko price batch failed (%d symbols, e.g. %s): %s",
+                               len(batch), ", ".join(batch[:3]), e)
+        if failed and not rows:
+            logger.error(
+                "CoinGecko returned NO prices for any of %d symbols — every open "
+                "position is unpriced this cycle, so no stop-loss or take-profit "
+                "can be evaluated.", len(wanted))
+        return rows
 
     @staticmethod
     def _pick(rows: list, symbol: str, name: str,
@@ -136,6 +166,68 @@ class GeckoClient:
             if price is not None:
                 out[symbol] = price
         return out
+
+    # --- Coin universe -----------------------------------------------------
+    # Sourcing the scan universe here (instead of CMC) means the listing and the
+    # price feed agree on names, which is what the _corroborated/_pick name
+    # gymnastics above exist to paper over: CMC's "Defi App" is CoinGecko's
+    # "HOME", CMC's "Perle" is a different coin from CoinGecko's "Pearl".
+
+    async def _markets_page(self, page: int) -> list:
+        """One page of /coins/markets ordered by descending 24h volume."""
+        params = {"vs_currency": "usd", "order": "volume_desc",
+                  "per_page": _UNIVERSE_PAGE_SIZE, "page": page, "sparkline": "false"}
+        async with aiohttp.ClientSession() as s:
+            async with s.get(f"{_BASE}/coins/markets", headers=self._headers(), params=params) as r:
+                r.raise_for_status()
+                data = await r.json()
+        return data if isinstance(data, list) else []
+
+    @staticmethod
+    def _listings_from_rows(rows: list, min_volume_24h: float) -> list[CoinListing]:
+        """Map market rows to CoinListing, dropping sub-floor and unpriced coins.
+        CoinGecko has no server-side volume filter (CMC's `volume_24h_min`), so
+        the floor is applied here."""
+        out: list[CoinListing] = []
+        for row in rows:
+            price = row.get("current_price")
+            volume = float(row.get("total_volume") or 0.0)
+            if not price or volume < min_volume_24h:
+                continue
+            out.append(CoinListing(
+                symbol=str(row.get("symbol", "")).upper(),
+                name=str(row.get("name", "")),
+                price=float(price),
+                volume_24h=volume,
+                change_24h=float(row.get("price_change_percentage_24h") or 0.0),
+            ))
+        return out
+
+    async def fetch_all_coins(self, min_volume_24h: float = 0.0,
+                              max_pages: int = 20, throttle: float = 2.5) -> list[CoinListing]:
+        """The scan universe, paged by descending volume until the floor is
+        crossed. Ordering is what keeps this cheap: the first page whose last row
+        is under the floor is the last page worth asking for (~11 pages at a
+        $25k floor), which matters on the Demo tier's 10k calls/month.
+
+        Returns whatever it collected on a mid-page failure — callers keep their
+        previous universe rather than scanning an empty list."""
+        coins: list[CoinListing] = []
+        for page in range(1, max_pages + 1):
+            try:
+                rows = await self._markets_page(page)
+            except Exception as e:
+                logger.warning("CoinGecko universe page %d failed: %s", page, e)
+                break
+            if not rows:
+                break
+            coins.extend(self._listings_from_rows(rows, min_volume_24h))
+            last_volume = float(rows[-1].get("total_volume") or 0.0)
+            if last_volume < min_volume_24h or len(rows) < _UNIVERSE_PAGE_SIZE:
+                break
+            if throttle:
+                await asyncio.sleep(throttle)
+        return coins
 
     async def fetch_icons(self, coins: list) -> dict:
         """Bulk coin icon URLs for (symbol, name) pairs in ONE call, name-
