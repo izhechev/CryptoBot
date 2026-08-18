@@ -44,6 +44,8 @@ export interface StrategyStats {
   wins: number;
   losses: number;
   win_rate: number;
+  dead: number;
+  dead_rate: number;
   open_positions: number;
   signals_today: number;
   avg_pnl_pct: number;

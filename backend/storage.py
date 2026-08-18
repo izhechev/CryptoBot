@@ -441,10 +441,18 @@ class Storage:
             open_count = conn.execute(f"SELECT COUNT(*) FROM positions {where_open}", params).fetchone()[0]
             signals_today = conn.execute(f"SELECT COUNT(*) FROM signals {where_sig}", params).fetchone()[0]
             avg_pnl = conn.execute(f"SELECT AVG(pnl_pct) FROM positions {where_pos}", params).fetchone()[0]
+            # Stagnation cuts, counted separately. wins/losses split on P&L sign,
+            # which hides them completely — a book can be 80% trades that went
+            # nowhere and still show a middling win rate.
+            dead = conn.execute(
+                f"SELECT COUNT(*) FROM positions {where_pos} AND outcome='dead'", params
+            ).fetchone()[0]
             return {
                 "total_closed": total,
                 "wins": wins,
                 "losses": total - wins,
+                "dead": dead,
+                "dead_rate": round(dead / total * 100, 1) if total > 0 else 0.0,
                 "win_rate": round(wins / total * 100, 1) if total > 0 else 0.0,
                 "open_positions": open_count,
                 "signals_today": signals_today,

@@ -48,7 +48,7 @@ export function StatBar({ stats, connected, nextScanIn }: {
 }) {
   return (
     <div className="border-b border-[var(--border)] bg-[var(--panel)]/60 backdrop-blur-sm">
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-x-6 gap-y-4 px-5 py-4">
+      <div className="grid grid-cols-2 md:grid-cols-7 gap-x-6 gap-y-4 px-5 py-4">
         <WinRate label="Overall Win" rate={stats.overall.win_rate}
                  closed={stats.overall.total_closed} accent="var(--text)" />
         <WinRate label="Standard Win" rate={stats.standard.win_rate}
@@ -58,6 +58,12 @@ export function StatBar({ stats, connected, nextScanIn }: {
 
         <Metric label="Open" value={String(stats.overall.open_positions)}
                 sub={`${stats.whale.open_positions}🐋`} />
+        {/* Dead rate: trades cut by the stagnation exit. wins/losses split on P&L
+            sign, so a book that is mostly going nowhere looks like a middling win
+            rate without this. Lower is better. */}
+        <Metric label="Dead Rate" value={`${stats.overall.dead_rate ?? 0}%`}
+                sub={`${stats.overall.dead ?? 0} of ${stats.overall.total_closed}`}
+                subColor={(stats.overall.dead_rate ?? 0) >= 50 ? "var(--red)" : "var(--muted)"} />
         <Metric label="Signals Today" value={String(stats.overall.signals_today)}
                 sub={`avg ${stats.overall.avg_pnl_pct >= 0 ? "+" : ""}${stats.overall.avg_pnl_pct}%`}
                 subColor={stats.overall.avg_pnl_pct >= 0 ? "var(--green)" : "var(--red)"} />
