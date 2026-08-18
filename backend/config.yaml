@@ -134,7 +134,7 @@ exits:
   # Aligned to the take-profit (0.5) on 2026-08-18. Above the TP it is dead code:
   # a trade that peaks past the TP has already exited as a win, so the only trades
   # this can reach are those that never touched it.
-  standard_stagnation_min_peak_pct: 0.5
+  standard_stagnation_min_peak_pct: 1.0
   # 2026-08-18: 2.5 -> 1.5, clamp 4-10 -> 1-3, sized for the 0.5% take-profit.
   # An 8% stop against a 0.5% target was decoration: it fired on 1% of trades,
   # everything else drifted into the stagnation cut. Measured at TP 0.5%,
@@ -146,8 +146,8 @@ exits:
   # Halves the dead rate for two points of win rate, and losers get cut instead
   # of drifting. Still not profitable — see take_profit_pct.
   atr_stop_multiplier: 1.5
-  stop_pct_min: 1.0
-  stop_pct_max: 3.0
+  stop_pct_min: 2.0
+  stop_pct_max: 2.0
   atr_trail_multiplier: 1.5     # trailing give-back = 1.5 x ATR%
   trail_pct_min: 2.0
   trail_pct_max: 6.0
@@ -184,8 +184,8 @@ paper_trading:
   # is ~1.26%, so an average win of ~+0.45% still loses money. Gross expectancy is
   # ~0 at EVERY TP tested (-0.02% to -0.13%) — there is no edge here, only a
   # relabelling of outcomes. Net/trade stays ~-1.3%.
-  take_profit_pct: 0.5
-  stop_loss_pct: 3.0
+  take_profit_pct: 2.0
+  stop_loss_pct: 2.0
   max_hold_hours: 24
   notional_size: 1000.0
 
@@ -278,7 +278,7 @@ whale:
   # them green. SL 10/15/25 scored identically (stagnation fires first), so 10 is
   # kept purely as the disaster cap; SL 5 was worse OOS. User accepted a lower
   # reward:risk in exchange for win rate (2026-08-08). Was 25/25 since 07-29.
-  take_profit_pct: 8.0
+  take_profit_pct: 10.0
   stop_loss_pct: 10.0
   max_hold_hours: 12
   max_open: 0                   # 0 = uncapped (2026-08-17). Was 6: 12 overnight longs
