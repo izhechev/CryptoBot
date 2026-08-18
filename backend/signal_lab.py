@@ -226,23 +226,45 @@ def summary_line(name: str, train: list, test: list, cost_pct: float,
 
 async def run(signal: str, days: int, ncoins: int, holdout_frac: float,
               cost_pct: float, cfg: Optional[Config] = None,
-              compare_all: bool = False, bar: float = 0.25) -> None:
+              compare_all: bool = False, bar: float = 0.5,
+              min_candle_usd: float = 125_000.0) -> None:
     cfg = cfg or load_config()
     fn = SIGNALS[signal]
     md = MarketData(cfg)
     await md.init()
     cmc = CmcClient(cfg.cmc_api_key)
-    coins = (await cmc.fetch_all_coins(min_volume_24h=cfg.min_volume_24h))[:ncoins]
+    # Select the liquid coins FIRST, then take ncoins. The listing arrives roughly
+    # market-cap ordered, so slicing before filtering picks large caps that barely
+    # trade: coins[:200] had a median of $11M/day and a floor of $231k, and only
+    # 14 of them survived the liquidity floor. Sorting by volume finds the ~200
+    # coins that actually clear it.
+    listing = await cmc.fetch_all_coins(min_volume_24h=cfg.min_volume_24h)
+    daily_floor = min_candle_usd * 96          # 96 fifteen-minute candles a day
+    liquid = sorted((c for c in listing if c.volume_24h >= daily_floor),
+                    key=lambda c: c.volume_24h, reverse=True)
+    print(f"universe: {len(liquid)} of {len(listing)} coins clear "
+          f"${daily_floor:,.0f}/day; taking the top {ncoins}")
+    coins = liquid[:ncoins]
     candles = days * _CANDLES_PER_DAY + _WARMUP
     btc_df = await fetch_history(md, "BTC", candles, True)
     btc = btc_df["close"] if btc_df is not None else None
 
     names = list(SIGNALS) if compare_all else [signal]
     per: dict[str, list[Entry]] = {k: [] for k in names}
-    loaded = 0
+    loaded = skipped_thin = 0
+    vols: list[float] = []
     for n, coin in enumerate(coins, 1):
         df = await fetch_history(md, coin.symbol, candles, True)
         if df is None or len(df) < _WARMUP:
+            continue
+        # LIQUIDITY FLOOR, enforced here rather than remembered. A EUR1,000 order
+        # in the old $25k/day universe was ~7.5% of a 15-minute candle, costing
+        # 2.08% round trip — an order of magnitude more than any edge measured in
+        # it. A signal found in markets you cannot execute in is not a signal.
+        med_usd = float((df["close"] * df["volume"]).median() or 0.0)
+        vols.append(med_usd)
+        if med_usd < min_candle_usd:
+            skipped_thin += 1
             continue
         loaded += 1
         # One data pass, every signal evaluated on it — six CLI runs would
@@ -252,6 +274,13 @@ async def run(signal: str, days: int, ncoins: int, holdout_frac: float,
         if n % 25 == 0:
             print(f"  ...{n}/{len(coins)} coins", flush=True)
     await md.close()
+
+    part = 1000.0 / min_candle_usd * 100
+    implied = 0.2 + min(2.0, max(0.05, 1000.0 / min_candle_usd * 25))
+    print(f"\nliquidity floor ${min_candle_usd:,.0f}/candle: kept {loaded}, "
+          f"skipped {skipped_thin} as too thin")
+    print(f"  a EUR1,000 order is <= {part:.2f}% of a candle there "
+          f"-> ~{implied:.2f}% maker round trip")
 
     if compare_all:
         print(f"\n=== {loaded} coins x {days}d | bar = {bar:+.2f}% gross "
@@ -288,14 +317,19 @@ def main() -> None:
     ap.add_argument("--days", type=int, default=60)
     ap.add_argument("--coins", type=int, default=120)
     ap.add_argument("--holdout-frac", type=float, default=0.33)
-    ap.add_argument("--cost-pct", type=float, default=1.0,
-                    help="round-trip cost for the net line (measured median ~1.0%%)")
+    ap.add_argument("--cost-pct", type=float, default=0.4,
+                    help="round-trip cost for the net line; 0.4%% is what the "
+                         "default liquidity floor implies")
     ap.add_argument("--list", action="store_true", help="list signals and exit")
     ap.add_argument("--all", action="store_true",
                     help="compare every signal in one data pass")
-    ap.add_argument("--bar", type=float, default=0.25,
-                    help="gross expectancy a signal must clear (default 0.25%%: "
-                         "0.083%% net for ~EUR5/day + 0.15%% maker-only costs)")
+    ap.add_argument("--bar", type=float, default=0.5,
+                    help="gross expectancy a signal must clear. 0.5%% leaves real "
+                         "margin over the ~0.4%% cost of a liquid universe")
+    ap.add_argument("--min-candle-usd", type=float, default=125_000.0,
+                    help="liquidity floor: median $ traded per 15m candle. "
+                         "125k => a EUR1,000 order is 0.8%% of a candle, ~0.40%% "
+                         "round trip. The old $25k/DAY universe cost 2.08%%.")
     args = ap.parse_args()
     if args.list:
         for k, f in SIGNALS.items():
@@ -304,7 +338,8 @@ def main() -> None:
     if args.signal not in SIGNALS:
         raise SystemExit(f"unknown signal {args.signal!r}; --list to see them")
     asyncio.run(run(args.signal, args.days, args.coins, args.holdout_frac,
-                    args.cost_pct, compare_all=args.all, bar=args.bar))
+                    args.cost_pct, compare_all=args.all, bar=args.bar,
+                    min_candle_usd=args.min_candle_usd))
 
 
 if __name__ == "__main__":
