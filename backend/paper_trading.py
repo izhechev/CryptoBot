@@ -50,7 +50,8 @@ class PaperTrading:
                       exchange: Optional[str] = None,
                       stop_pct: Optional[float] = None,
                       trail_pct: Optional[float] = None,
-                      take_profit_pct: Optional[float] = None) -> Position:
+                      take_profit_pct: Optional[float] = None,
+                      entry_context: Optional[str] = None) -> Position:
         pos = Position(
             id=None,
             signal_id=event.signal_id,
@@ -67,6 +68,8 @@ class PaperTrading:
             stop_pct=stop_pct,
             trail_pct=trail_pct,
             peak_price=entry_price,
+            trough_price=entry_price,
+            entry_context=entry_context,
             take_profit_pct=take_profit_pct,
         )
         return self._db.save_position(pos)
