@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -10,6 +11,11 @@ from backend.fear_greed import fetch_fear_greed
 from backend.gecko import GeckoClient
 
 logger = logging.getLogger(__name__)
+
+# A browser tab that goes away without closing leaves a half-open socket:
+# send_json never raises, it just never returns. Whatever task is
+# broadcasting is then wedged forever.
+_WS_SEND_TIMEOUT = 5.0
 
 
 class _WSManager:
@@ -28,7 +34,12 @@ class _WSManager:
         dead = []
         for ws in self._connections:
             try:
-                await ws.send_json(message)
+                # Timed, because a stalled client does not error — it hangs. On
+                # 2026-08-18 this blocked the TRACKER for 14 hours: no stop-loss
+                # or take-profit was evaluated on 136 open positions while the
+                # scanner happily kept opening more. A slow client gets dropped;
+                # it must never hold up the bot.
+                await asyncio.wait_for(ws.send_json(message), timeout=_WS_SEND_TIMEOUT)
             except Exception:
                 dead.append(ws)
         for ws in dead:

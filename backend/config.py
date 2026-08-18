@@ -51,6 +51,9 @@ class Config:
     # How often the tracker pulls CoinGecko prices and pushes them to the dashboard.
     # One batched call per cycle; keep >=2s to respect CoinGecko's free-tier limit.
     price_feed_seconds: float = 3.0
+    # Hard ceiling on one tracker cycle. Exceeding it abandons the cycle and
+    # logs loudly, rather than letting the loop hang forever (2026-08-18).
+    tracker_cycle_timeout_seconds: float = 120.0
     # Whale entry-quality filters (raise win rate):
     whale_ema_period: int = 20                    # ride a thrust only if price > this EMA
     whale_min_candle_volume_usd: float = 10000.0  # spike candle must move real $ (kill noise)
@@ -328,6 +331,8 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         tracking_timeframe=tracking.get("candle_timeframe", "1m"),
         tracking_candle_limit=int(tracking.get("candle_limit", 60)),
         price_feed_seconds=float(tracking.get("price_feed_seconds", 1.0)),
+        tracker_cycle_timeout_seconds=float(
+            tracking.get("cycle_timeout_seconds", 120.0)),
         cmc_api_key=os.environ.get("CMC_API_KEY", ""),
         gemini_api_key=os.environ.get("GEMINI_API_KEY", ""),
         telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
