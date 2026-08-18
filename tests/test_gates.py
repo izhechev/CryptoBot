@@ -123,3 +123,28 @@ def test_every_gate_explains_itself(cfg):
         assert not g.passed
         assert g.detail, f"{g.name} blocked without explaining why"
         assert g.name
+
+
+def test_stablecoin_gate_catches_a_peg_named_like_one(cfg):
+    """U / "United Stables" traded live on 2026-08-18 and closed +0.01% dead: a
+    dollar peg cannot reach a take-profit. The symbol carries no "USD", so the
+    symbol heuristic missed it — the NAME is the tell."""
+    assert not gates.stablecoin_gate(cfg, "U", 0.9994, name="United Stables")
+    assert not gates.stablecoin_gate(cfg, "FOO", 1.0009, name="Foo Dollar")
+    # a real coin that merely trades near $1 must survive
+    assert gates.stablecoin_gate(cfg, "ALGO", 1.002, name="Algorand")
+
+
+def test_derivative_gate_drops_wrappers_and_commodity_tokens(cfg):
+    """A $35M volume floor still admits WETH, WBNB, CBBTC (wrapped duplicates of
+    coins you already trade, with thinner books) and PAXG/XAUt (gold, which does
+    not move on crypto momentum). Same class of mistake as the tokenized stocks."""
+    assert not gates.derivative_gate(cfg, "WETH", "Wrapped Ether")
+    assert not gates.derivative_gate(cfg, "CBBTC", "Coinbase Wrapped BTC")
+    assert not gates.derivative_gate(cfg, "PAXG", "PAX Gold")
+    assert not gates.derivative_gate(cfg, "XAUT", "Tether Gold")
+    assert not gates.derivative_gate(cfg, "STETH", "Lido Staked Ether")
+    # the real underlying assets must survive
+    assert gates.derivative_gate(cfg, "ETH", "Ethereum")
+    assert gates.derivative_gate(cfg, "BTC", "Bitcoin")
+    assert gates.derivative_gate(cfg, "GOLDCOIN", "Goldcoin")   # not price-linked

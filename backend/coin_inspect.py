@@ -92,7 +92,7 @@ async def inspect_coin(scanner, symbol: str, with_news: bool = False) -> CoinRep
     report.volume_24h = coin.volume_24h
 
     # Universe-level exclusions: these coins are dropped before any scan happens.
-    for g in (gates.stablecoin_gate(cfg, coin.symbol, coin.price),
+    for g in (gates.stablecoin_gate(cfg, coin.symbol, coin.price, name=coin.name),
               gates.tokenized_gate(cfg, coin.name)):
         if not g:
             report.in_universe = False

@@ -105,6 +105,15 @@ class Config:
     tokenized_equity_markers: list = field(default_factory=lambda: [
         "tokenized stock", "tokenized equity", "xstock", "bstocks",
     ])
+    # Wrapped/staked duplicates and commodity tokens. A volume floor alone still
+    # admits WETH, WBNB, CBBTC, vBNB, PAXG, XAUt.
+    derivative_markers: list = field(default_factory=lambda: [
+        "wrapped", "staked", "gold", "silver", "restaked",
+    ])
+    derivative_symbols: list = field(default_factory=lambda: [
+        "WETH", "WBTC", "WBNB", "CBBTC", "VBNB", "STETH", "WSTETH", "WEETH",
+        "RETH", "PAXG", "XAUT", "SOLVBTC", "LBTC", "FIGR_HELOC",
+    ])
     # Dollar pegs can't reach a take-profit; they just hold a slot until timeout.
     exclude_stablecoins: bool = True
     stablecoin_symbols: list = field(default_factory=lambda: [
@@ -290,6 +299,12 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         regime_hysteresis_pct=float(scan.get("regime_hysteresis_pct", 0.4)),
         regime_candle_limit=int(scan.get("regime_candle_limit", 250)),
         regime_confirm_candles=int(scan.get("regime_confirm_candles", 2)),
+        derivative_markers=list(
+            scan.get("derivative_markers")
+            or Config.__dataclass_fields__["derivative_markers"].default_factory()),
+        derivative_symbols=list(
+            scan.get("derivative_symbols")
+            or Config.__dataclass_fields__["derivative_symbols"].default_factory()),
         exclude_tokenized_equities=bool(scan.get("exclude_tokenized_equities", True)),
         tokenized_equity_markers=list(
             scan.get("tokenized_equity_markers")

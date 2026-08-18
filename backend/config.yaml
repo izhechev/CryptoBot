@@ -93,7 +93,19 @@ scoring:
                                  # going to fix it. See cryptobot-spot-strategy-decision memory.
   technical_weight: 0.65
   news_weight: 0.35
-  min_volume_24h: 25000          # CMC server-side filter: ~2785 coins (lower = more, thinner coins)
+  # 2026-08-19: 25,000 -> 35,000,000. This was the single most damaging line in
+  # the config. Exchange volume is a median 3.4% of the CMC figure, so a $25k/day
+  # coin trades ~$9 per 15m candle — a EUR1,000 order was 2,288% of a candle on
+  # ASP, 634% on XNY. Measured round-trip cost 2.20% against a 2.30% target: a
+  # win netted +0.10%, a loss cost -4.50%, and BREAK-EVEN NEEDED A 97.8% WIN RATE.
+  # Those entries were unwinnable arithmetic, not bad luck.
+  #
+  # $35M/day leaves ~33 coins whose cost is <=0.80% (BTC, ETH, SOL, XRP, BNB,
+  # DOGE, ADA, AVAX, LINK, UNI, PEPE, LTC, SUI, NEAR, ONDO, TAO, ENA, ...), and
+  # drops break-even from 97.8% to ~67%. Still above the 40-56% this signal
+  # measures, so it does not make the bot profitable — it stops it being
+  # impossible, and it means far fewer, better trades.
+  min_volume_24h: 35000000
   downtrend_penalty: 0.5         # multiply technical score if 4h is NOT in an uptrend
   indicators:
     macd_weight: 30              # momentum (gated by volume confirmation)
