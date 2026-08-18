@@ -333,7 +333,10 @@ async def test_stagnation_records_dead_outcome(tracker, db):
     tracker._cfg.whale_dead_exit_mode = "stagnation"
     make_open_position(db, "GIG", 100.0, hours_ago=5, strategy="whale")
     tracker._gecko.fetch_prices = AsyncMock(return_value={"GIG": 99.0})
-    await tracker.run_once()
+    # Stagnation now needs observations behind it: each cycle records one tick, so
+    # a trade only counts as "went nowhere" once we have actually watched it.
+    for _ in range(tracker._cfg.stagnation_min_observations):
+        await tracker.run_once()
     closed = db.get_all_positions()[0]
     assert closed.outcome == "dead"
     assert closed.exit_price == pytest.approx(99.0)
