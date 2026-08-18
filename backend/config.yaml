@@ -135,10 +135,19 @@ exits:
   # a trade that peaks past the TP has already exited as a win, so the only trades
   # this can reach are those that never touched it.
   standard_stagnation_min_peak_pct: 0.5
-  atr_stop_multiplier: 2.5      # stop distance = 2.5 x ATR% (sweep: 2.5 beat 1.5 in every
-                                # spot row; whales were indifferent across 1.5-2.5)
-  stop_pct_min: 4.0
-  stop_pct_max: 10.0
+  # 2026-08-18: 2.5 -> 1.5, clamp 4-10 -> 1-3, sized for the 0.5% take-profit.
+  # An 8% stop against a 0.5% target was decoration: it fired on 1% of trades,
+  # everything else drifted into the stagnation cut. Measured at TP 0.5%,
+  # 37 coins x 21d:
+  #     2.5x, 4-10  -> 58% win, 49% dead, avgL -0.85%, net -1.18%   (was live)
+  #     1.5x, 1-3   -> 56% win, 24% dead, avgL -0.69%, net -1.11%   (this)
+  #     1.0x, 0.5-1.5 -> 43% win, 15% dead                (too tight: cuts
+  #                      trades that would have recovered to the target)
+  # Halves the dead rate for two points of win rate, and losers get cut instead
+  # of drifting. Still not profitable — see take_profit_pct.
+  atr_stop_multiplier: 1.5
+  stop_pct_min: 1.0
+  stop_pct_max: 3.0
   atr_trail_multiplier: 1.5     # trailing give-back = 1.5 x ATR%
   trail_pct_min: 2.0
   trail_pct_max: 6.0
@@ -176,7 +185,7 @@ paper_trading:
   # ~0 at EVERY TP tested (-0.02% to -0.13%) — there is no edge here, only a
   # relabelling of outcomes. Net/trade stays ~-1.3%.
   take_profit_pct: 0.5
-  stop_loss_pct: 7.0
+  stop_loss_pct: 3.0
   max_hold_hours: 24
   notional_size: 1000.0
 
