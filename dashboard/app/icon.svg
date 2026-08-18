@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="CryptoBot Terminal">
+  <!-- Tile carries its own background so the mark reads on any browser tab
+       colour, light or dark. Ink and accent are the dashboard's own text and
+       green tokens (globals.css). Note: XML comments cannot contain a double
+       hyphen, so CSS variable names are spelled out here rather than quoted. -->
+  <rect width="32" height="32" rx="7" fill="#201818"/>
+  <!-- Ascending candle trio: legible down to 16px, where finer chart art
+       turns to mush. -->
+  <g fill="#d62828">
+    <rect x="5" y="18" width="6" height="9" rx="1.5"/>
+    <rect x="13" y="12" width="6" height="15" rx="1.5"/>
+    <rect x="21" y="6" width="6" height="21" rx="1.5"/>
+  </g>
+  <!-- Wicks: invisible at favicon size, but they keep the mark honest when it
+       is scaled up for a bookmark tile or PWA icon. -->
+  <g fill="#d62828" opacity=".6">
+    <rect x="7.4" y="14.5" width="1.2" height="3.5"/>
+    <rect x="15.4" y="8.5" width="1.2" height="3.5"/>
+    <rect x="23.4" y="2.5" width="1.2" height="3.5"/>
+  </g>
+</svg>
