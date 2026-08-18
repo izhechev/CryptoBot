@@ -161,6 +161,7 @@ class Scanner:
         coins = self._dedupe_by_symbol(coins)
         coins = self._drop_stablecoins(coins)
         coins = self._drop_tokenized_equities(coins)
+        coins = self._drop_derivatives(coins)
         self._coins = coins
         self._universe_at = time.monotonic()
         return coins
@@ -191,6 +192,22 @@ class Scanner:
                         + (" …" if len(dropped) > 10 else ""))
         return kept
 
+    def _drop_derivatives(self, coins: list[CoinListing]) -> list[CoinListing]:
+        """Remove wrapped/staked duplicates and commodity tokens (see
+        gates.derivative_gate). Holding WETH alongside ETH is one bet counted
+        twice, in the thinner of the two books."""
+        kept, dropped = [], []
+        for c in coins:
+            if not gates.derivative_gate(self._cfg, c.symbol, c.name):
+                dropped.append(c.symbol)
+            else:
+                kept.append(c)
+        if dropped:
+            logger.info("Universe: dropped %d wrapper/commodity token(s) — %s",
+                        len(dropped), ", ".join(sorted(dropped)[:10])
+                        + (" …" if len(dropped) > 10 else ""))
+        return kept
+
     def _drop_stablecoins(self, coins: list[CoinListing]) -> list[CoinListing]:
         """Remove dollar pegs from the universe.
 
@@ -205,12 +222,12 @@ class Scanner:
         ticker merely contains USD is priced nowhere near 1.0."""
         if not self._cfg.exclude_stablecoins:
             return coins
-        known = {s.upper() for s in self._cfg.stablecoin_symbols}
         kept, dropped = [], []
         for c in coins:
-            sym = c.symbol.upper()
-            pegged = 0.97 <= (c.price or 0.0) <= 1.03
-            if sym in known or ("USD" in sym and pegged):
+            # One definition, shared with the inspector and the entry gates —
+            # a second copy here is how "U / United Stables" got through the
+            # symbol check and traded live on 2026-08-18.
+            if not gates.stablecoin_gate(self._cfg, c.symbol, c.price, name=c.name):
                 dropped.append(c.symbol)
             else:
                 kept.append(c)

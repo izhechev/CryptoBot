@@ -94,14 +94,45 @@ def tokenized_gate(cfg, name: str) -> GateResult:
     return _no("tokenized equity", f"name matches '{hit}'")
 
 
-def stablecoin_gate(cfg, symbol: str, price: Optional[float]) -> GateResult:
-    """Dollar pegs can't reach a take-profit — they hold a slot until timeout."""
+_PEG_NAME_MARKERS = ("stable", "dollar", "usd ", " usd", "peg")
+
+
+def stablecoin_gate(cfg, symbol: str, price: Optional[float],
+                    name: str = "") -> GateResult:
+    """Dollar pegs can't reach a take-profit — they hold a slot until timeout.
+
+    Three nets, because each one alone has been beaten in live trading: the
+    configured list, the symbol, and the NAME. U / "United Stables" carries no
+    "USD" in its ticker and traded live on 2026-08-18, closing +0.01% dead."""
     sym = (symbol or "").upper()
     if sym in {s.upper() for s in cfg.stablecoin_symbols}:
         return _no("stablecoin", f"{sym} is a listed stablecoin")
-    if "USD" in sym and price is not None and 0.97 <= price <= 1.03:
+    near_peg = price is not None and 0.97 <= price <= 1.03
+    if "USD" in sym and near_peg:
         return _no("stablecoin", f"{sym} trades at ${price:.4f} — a dollar peg")
+    lowered = (name or "").lower()
+    if near_peg and any(m in lowered for m in _PEG_NAME_MARKERS):
+        return _no("stablecoin", f"{name!r} trades at ${price:.4f} — a dollar peg")
     return _ok("stablecoin", "not a stablecoin")
+
+
+def derivative_gate(cfg, symbol: str, name: str) -> GateResult:
+    """Drop wrapped/staked duplicates and commodity-linked tokens.
+
+    A $35M volume floor still admits WETH, WBNB, CBBTC and vBNB — the same assets
+    you already trade, wrapped, with thinner books and no independent price. And
+    PAXG/XAUt track gold, which does not respond to crypto momentum any more than
+    a tokenized stock does.
+
+    Matched on whole words in the NAME so a coin merely containing the letters
+    survives: "Goldcoin" is not gold, "Wrapped Ether" is."""
+    lowered = f" {(name or '').lower()} "
+    hit = next((m for m in cfg.derivative_markers if f" {m} " in lowered), None)
+    if hit is not None:
+        return _no("derivative", f"name contains '{hit}' — wrapper or commodity")
+    if (symbol or "").upper() in {s.upper() for s in cfg.derivative_symbols}:
+        return _no("derivative", f"{symbol} is a listed wrapper/commodity token")
+    return _ok("derivative", "not a wrapper or commodity token")
 
 
 def cooldown_gate(cfg, last_exit, now: Optional[datetime] = None) -> GateResult:
