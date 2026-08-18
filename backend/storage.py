@@ -247,6 +247,16 @@ class Storage:
             ).fetchall()
             return [_position_from_row(r) for r in rows]
 
+    def count_price_ticks(self, position_id: int) -> int:
+        """How many prices we actually OBSERVED for this position. The stagnation
+        exit judges "it never moved"; without observations the honest answer is
+        "we never looked" (2026-08-18: a dark price feed made 84 trades look
+        stagnant at once)."""
+        with self._conn() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM price_ticks WHERE position_id=?", (position_id,)
+            ).fetchone()[0]
+
     def get_position(self, position_id: int) -> Optional[Position]:
         """One position by id. Callers that need a specific row must use this, not
         a scan of get_all_positions(limit=...): that window is ordered by entry_at

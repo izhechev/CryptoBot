@@ -122,11 +122,25 @@ def stag_trader(cfg, db):
                                 stagnation_hours=4.0, stagnation_min_peak_pct=2.0), db)
 
 
+
+def _observed(trader, pos, n: int = 5):
+    """Record price ticks for a position — the stagnation exit now requires real
+    observations before it will call a trade dead, so a test that means "we saw
+    this go nowhere" has to have seen something."""
+    from datetime import datetime, timezone
+    from backend.storage import PriceTick
+    for _ in range(n):
+        trader._db.save_price_tick(PriceTick(
+            id=None, position_id=pos.id, price=pos.entry_price,
+            checked_at=datetime.now(timezone.utc)))
+
+
 def test_stagnation_cuts_dead_whale(stag_trader, whale_event):
     """4.5h in, never peaked past +2%, sitting at -1%: momentum is dead — cut at
     market instead of bleeding to the 12h timeout (GIGGLE)."""
     pos = stag_trader.open_position(whale_event, entry_price=100.0)
     pos = _aged(pos, hours=4.5, peak=101.0)  # peak +1% < +2%
+    _observed(stag_trader, pos)   # we actually watched it stay flat
     assert stag_trader.check_position(pos, current_price=99.0) == TradeOutcome.DEAD
 
 
@@ -176,3 +190,44 @@ def test_stats_scoped_by_strategy(trader, signal_event, whale_event, db):
     assert db.get_stats(strategy="whale")["wins"] == 0
     assert db.get_stats(strategy="whale")["losses"] == 1
     assert db.get_stats()["total_closed"] == 2
+
+
+def test_stagnation_needs_evidence_before_declaring_a_trade_dead(cfg, db):
+    """2026-08-18: 84 of 120 closed trades came back "dead", 56 of them with
+    peak_price still exactly at entry. No coin is flat to 0.00% for 20 hours —
+    those peaks were never RECORDED, because the price feed was returning nothing
+    (CoinGecko's 50-symbol cap). The rule asked "did this ever reach +2%?", read an
+    empty tick history, and cut the whole book at once.
+
+    "We never looked" is not "it never moved". Without observations the stagnation
+    exit must stand down and let the clock-based timeout handle it."""
+    from datetime import datetime, timezone, timedelta
+    from backend.paper_trading import PaperTrading, TradeOutcome
+    from backend.storage import Signal, Position
+
+    cfg.standard_dead_exit_mode = "stagnation"
+    cfg.standard_stagnation_hours = 8.0
+    cfg.standard_stagnation_min_peak_pct = 1.5
+
+    sig = db.save_signal(Signal(
+        id=None, coin_symbol="JTO", coin_name="Jito", total_score=80.0,
+        technical_score=70.0, news_score=60.0, gemini_explanation="x",
+        fired_at=datetime.now(timezone.utc), strategy="standard"))
+    pos = db.save_position(Position(
+        id=None, signal_id=sig.id, coin_symbol="JTO", entry_price=1.0,
+        entry_at=datetime.now(timezone.utc) - timedelta(hours=10),
+        exit_price=None, exit_at=None, outcome=None, pnl_pct=None,
+        strategy="standard", peak_price=1.0))       # never moved off entry
+
+    trader = PaperTrading(cfg, db)
+
+    # No ticks recorded at all — the feed was dark. Must NOT be called dead.
+    assert trader.check_position(pos, 0.99) is not TradeOutcome.DEAD
+
+    # With real observations behind it, the rule works exactly as before.
+    from backend.storage import PriceTick
+    for i in range(cfg.stagnation_min_observations):
+        db.save_price_tick(PriceTick(id=None, position_id=pos.id, price=1.0,
+                                     checked_at=datetime.now(timezone.utc)))
+
+    assert trader.check_position(pos, 0.99) is TradeOutcome.DEAD

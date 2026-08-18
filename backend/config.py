@@ -84,6 +84,12 @@ class Config:
     # BTC tick; at a 60s poll a bare `close > ema` flips every poll while BTC rests
     # on the line (2026-08-16 22:03 BULL -> 22:04 BEAR). Inside the band the
     # previous verdict stands. 0 restores the old knife-edge behavior.
+    # Observations required before the stagnation exit may call a trade dead. With
+    # a dark price feed peak_price never leaves entry, so "never reached +X%" is
+    # indistinguishable from "never measured" — that cut 84 positions in one go on
+    # 2026-08-18. Below this many recorded ticks, stagnation stands down and the
+    # max-hold timeout handles the position instead.
+    stagnation_min_observations: int = 3
     regime_hysteresis_pct: float = 0.4
     # Candles fetched for the BTC regime EMA-50. Deeper than htf_candle_limit: at
     # 100 the EMA seeds ~$23 low on BTC (+0.036% tilt toward BULL), converging by
@@ -279,6 +285,8 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         universe_refresh_hours=float(scan.get("universe_refresh_hours", 6.0)),
         regime_poll_seconds=float(scan.get("regime_poll_seconds", 60.0)),
         rescan_min_interval_minutes=float(scan.get("rescan_min_interval_minutes", 10.0)),
+        stagnation_min_observations=int(
+            exits.get("stagnation_min_observations", 3)),
         regime_hysteresis_pct=float(scan.get("regime_hysteresis_pct", 0.4)),
         regime_candle_limit=int(scan.get("regime_candle_limit", 250)),
         regime_confirm_candles=int(scan.get("regime_confirm_candles", 2)),

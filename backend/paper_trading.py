@@ -142,7 +142,12 @@ class PaperTrading:
         dead_mode, dead_hours, dead_min_peak_pct = self._dead_exit_params(pos.strategy)
         if (not armed and dead_mode == "stagnation"
                 and elapsed >= timedelta(hours=dead_hours)
-                and peak_pnl < dead_min_peak_pct):
+                and peak_pnl < dead_min_peak_pct
+                # peak_pnl is only meaningful if we actually watched the trade.
+                # A dark feed leaves peak_price at entry, which reads as "never
+                # moved" — that closed 84 positions as dead in one cycle on
+                # 2026-08-18 when the price feed was returning nothing.
+                and self._db.count_price_ticks(pos.id) >= self._cfg.stagnation_min_observations):
             return TradeOutcome.DEAD
         if elapsed >= timedelta(hours=max_hold_hours):
             return TradeOutcome.TIMEOUT
