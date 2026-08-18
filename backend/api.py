@@ -74,12 +74,19 @@ def create_app(db: Storage, cfg: Config, scanner=None) -> FastAPI:
 
     @app.get("/positions")
     def get_positions(limit: int = 100):
+        """Every OPEN position, plus the `limit` most recently closed.
+
+        This used to be get_all_positions(limit=100) — one window ordered by
+        entry_at. Once max_open_positions was uncapped the open book reached 139,
+        which pushed every closed trade out of the window: the dashboard showed 3
+        closed trades while /stats and Telegram both said 9. Open positions must
+        never be able to hide closed ones."""
         # Attach each OPEN position's last recorded tick price (+ live pnl) so the
         # dashboard shows the real price on load instead of entry/+0.00% — the WS
         # price stream now only broadcasts every price_feed_seconds (slow, to save
         # CoinGecko credits), so it can't be the only source of the current price.
         out = []
-        for p in db.get_all_positions(limit=limit):
+        for p in db.get_open_positions() + db.get_closed_positions(limit=limit):
             d = _serialize(p)
             if p.outcome is None:
                 last = db.last_tick_price(p.id)

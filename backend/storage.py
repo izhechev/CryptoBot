@@ -41,6 +41,13 @@ class Position:
     take_profit_pct: Optional[float] = None
     scale_price: Optional[float] = None  # price where half was banked (scale-out); the
                                          # rest runs with a breakeven floor + trail
+    # Low-water mark while open. peak_price alone answers "how far did it run for
+    # us?"; without this, "was the stop too wide?" is unanswerable after the fact.
+    trough_price: Optional[float] = None
+    # JSON snapshot of the conditions at open (regime, F&G, raw indicator values,
+    # the coin's own volume). All of it is computed during the scan and then
+    # discarded — nothing at close time can reconstruct it.
+    entry_context: Optional[str] = None
 
 
 @dataclass
@@ -109,6 +116,7 @@ def _position_from_row(r) -> Position:
         exchange=r["exchange"], coin_name=(r["coin_name"] or ""),
         stop_pct=r["stop_pct"], trail_pct=r["trail_pct"], peak_price=r["peak_price"],
         scale_price=r["scale_price"], take_profit_pct=r["take_profit_pct"],
+        trough_price=r["trough_price"], entry_context=r["entry_context"],
     )
 
 
@@ -152,7 +160,9 @@ class Storage:
                     trail_pct REAL,
                     peak_price REAL,
                     scale_price REAL,
-                    take_profit_pct REAL
+                    take_profit_pct REAL,
+                    trough_price REAL,
+                    entry_context TEXT
                 );
                 CREATE TABLE IF NOT EXISTS price_ticks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -188,7 +198,8 @@ class Storage:
             for col, ddl in (("exchange", "TEXT"), ("coin_name", "TEXT"),
                              ("stop_pct", "REAL"), ("trail_pct", "REAL"),
                              ("peak_price", "REAL"), ("scale_price", "REAL"),
-                             ("take_profit_pct", "REAL")):
+                             ("take_profit_pct", "REAL"), ("trough_price", "REAL"),
+                             ("entry_context", "TEXT")):
                 if col not in cols:
                     conn.execute(f"ALTER TABLE positions ADD COLUMN {col} {ddl}")
 
@@ -219,12 +230,13 @@ class Storage:
             cur = conn.execute(
                 "INSERT INTO positions (signal_id, coin_symbol, entry_price, entry_at, "
                 "exit_price, exit_at, outcome, pnl_pct, strategy, exchange, coin_name, "
-                "stop_pct, trail_pct, peak_price, scale_price, take_profit_pct) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "stop_pct, trail_pct, peak_price, scale_price, take_profit_pct, "
+                "trough_price, entry_context) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (pos.signal_id, pos.coin_symbol, pos.entry_price, _dts(pos.entry_at),
                  pos.exit_price, _dts(pos.exit_at), pos.outcome, pos.pnl_pct, pos.strategy,
                  pos.exchange, pos.coin_name, pos.stop_pct, pos.trail_pct, pos.peak_price,
-                 pos.scale_price, pos.take_profit_pct),
+                 pos.scale_price, pos.take_profit_pct, pos.trough_price, pos.entry_context),
             )
             return Position(**{**pos.__dict__, "id": cur.lastrowid})
 
@@ -232,6 +244,26 @@ class Storage:
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM positions WHERE outcome IS NULL ORDER BY entry_at"
+            ).fetchall()
+            return [_position_from_row(r) for r in rows]
+
+    def get_position(self, position_id: int) -> Optional[Position]:
+        """One position by id. Callers that need a specific row must use this, not
+        a scan of get_all_positions(limit=...): that window is ordered by entry_at
+        and silently stops containing older rows as the book grows."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM positions WHERE id=?", (position_id,)).fetchone()
+            return _position_from_row(row) if row else None
+
+    def get_closed_positions(self, limit: int = 50) -> list[Position]:
+        """Most recently CLOSED positions, newest exit first. Kept separate from
+        get_all_positions so a large open book cannot crowd closed trades out of
+        the dashboard (2026-08-18: 139 open pushed every closed trade out of a
+        100-row window ordered by entry_at)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM positions WHERE exit_at IS NOT NULL "
+                "ORDER BY exit_at DESC LIMIT ?", (limit,)
             ).fetchall()
             return [_position_from_row(r) for r in rows]
 
@@ -305,6 +337,12 @@ class Storage:
         with self._conn() as conn:
             conn.execute("UPDATE positions SET peak_price=? WHERE id=?",
                          (peak_price, position_id))
+
+    def update_position_trough(self, position_id: int, trough_price: float) -> None:
+        """Persist a new low-water mark (MAE reference — how far it went against us)."""
+        with self._conn() as conn:
+            conn.execute("UPDATE positions SET trough_price=? WHERE id=?",
+                         (trough_price, position_id))
 
     def close_position(self, position_id: int, exit_price: float,
                        exit_at: datetime, outcome: str, pnl_pct: float) -> None:

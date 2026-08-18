@@ -487,3 +487,26 @@ async def test_a_stalled_websocket_client_does_not_block_the_broadcast(monkeypat
 
     assert healthy.got == [{"type": "prices"}]
     assert len(mgr._connections) == 1      # the stalled one is dropped
+
+
+@pytest.mark.asyncio
+async def test_a_close_is_announced_even_beyond_the_first_100_positions(tracker, db):
+    """2026-08-18: positions closed SILENTLY — no Telegram, no dashboard event.
+
+    _notify_closed looked the position up inside get_all_positions(limit=100),
+    ordered by entry_at DESC. Once max_open_positions was uncapped the book passed
+    148, so any close whose entry_at was not among the 100 newest simply wasn't
+    found, and the notification was skipped. The user saw trades vanish with no
+    explanation (JTO). A close must be announced regardless of book size."""
+    old = make_open_position(db, "JTO", 100.0, hours_ago=48)
+    for i in range(120):                       # bury it under newer entries
+        make_open_position(db, f"NEW{i}", 1.0, hours_ago=0)
+
+    tracker._gecko.fetch_prices = AsyncMock(return_value={"JTO": 80.0})  # well past the stop
+    await tracker.run_once()
+
+    assert db.get_all_positions(limit=500)
+    closed = [p for p in db.get_all_positions(limit=500) if p.id == old.id][0]
+    assert closed.outcome is not None, "position should have closed"
+    tracker._notifier.send_position_closed.assert_called_once()
+    assert tracker._notifier.send_position_closed.call_args[0][0].id == old.id

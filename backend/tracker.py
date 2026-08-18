@@ -170,9 +170,15 @@ class Tracker:
     async def _notify_closed(self, pos: Position) -> None:
         if not self._notifier:
             return
-        closed = next((p for p in self._db.get_all_positions(limit=100) if p.id == pos.id), None)
+        # By id. This used to scan get_all_positions(limit=100), which is ordered
+        # by entry_at — so once the book passed 100, closes of older positions were
+        # not found and went out with NO Telegram and NO dashboard event at all.
+        closed = self._db.get_position(pos.id)
         if closed:
             await self._notifier.send_position_closed(closed)
+        else:
+            logger.error("Closed %s (id=%s) but could not re-read it to notify",
+                         pos.coin_symbol, pos.id)
 
     async def loop(self) -> None:
         while True:
