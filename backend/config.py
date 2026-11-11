@@ -466,3 +466,41 @@ def load_ledger_settings(yaml_path: str = "backend/config.yaml") -> LedgerSettin
         max_open_positions=int(block["max_open_positions"]),
         max_total_exposure_eur=float(block["max_total_exposure_eur"]),
     )
+
+
+# ---------------------------------------------------------------------------
+# Live engine settings (M3). Mode is "legacy" (default) or "v1".
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class EngineSettings:
+    mode: str
+    cycle_seconds: float
+    entry_scan_minutes: float
+    max_pairs: int
+    min_volume_24h_eur: float
+
+    def __post_init__(self):
+        if self.mode not in ("legacy", "v1"):
+            raise ValueError(f"engine.mode must be 'legacy' or 'v1', got {self.mode!r}")
+        if not self.cycle_seconds > 0:
+            raise ValueError("engine.cycle_seconds must be > 0")
+        if not self.entry_scan_minutes >= 1:
+            raise ValueError("engine.entry_scan_minutes must be >= 1")
+        if self.max_pairs < 1:
+            raise ValueError("universe.max_pairs must be >= 1")
+        if not self.min_volume_24h_eur > 0:
+            raise ValueError("universe.min_volume_24h_eur must be > 0")
+
+
+def load_engine_settings(yaml_path: str = "backend/config.yaml") -> EngineSettings:
+    with open(yaml_path) as f:
+        raw = yaml.safe_load(f)
+    eng = raw.get("engine", {})
+    uni = raw.get("universe", {})
+    return EngineSettings(
+        mode=str(eng.get("mode", "legacy")).lower(),
+        cycle_seconds=float(eng.get("cycle_seconds", 60)),
+        entry_scan_minutes=float(eng.get("entry_scan_minutes", 15)),
+        max_pairs=int(uni.get("max_pairs", 40)),
+        min_volume_24h_eur=float(uni.get("min_volume_24h_eur", 100000)),
+    )

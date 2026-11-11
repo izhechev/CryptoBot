@@ -726,6 +726,36 @@ class Ledger:
             fee_taker=fee_taker,
         )
 
+    # ------------------------------------------------------------ helpers for the engine
+
+    def log_event(self, kind: str, payload: dict) -> None:
+        """Append an audit event (pause, downtime, flags). Does not change money."""
+        now = self._clock().isoformat()
+        with self._tx() as c:
+            self._require_account(c)
+            self._event(c, now, kind, None, payload)
+
+    def open_orders(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT id, pair, side, kind, limit_price, volume, created_at FROM orders "
+            "WHERE status = 'open' ORDER BY id").fetchall()
+        return [dict(r) for r in rows]
+
+    def holding_qty(self, pair: str) -> Decimal:
+        row = self._conn.execute("SELECT qty FROM holdings WHERE pair = ?", (pair,)).fetchone()
+        return Decimal(row["qty"]) if row else ZERO
+
+    def last_trade_close(self, pair: str) -> Optional[tuple[str, datetime]]:
+        """(result, closed_at) of the most recent closed round trip on `pair`."""
+        rows = self._conn.execute(
+            "SELECT payload_json, ts FROM events WHERE event_type = 'trade_closed' ORDER BY id").fetchall()
+        last = None
+        for r in rows:
+            payload = json.loads(r["payload_json"])
+            if payload["pair"] == pair:
+                last = (payload["result"], datetime.fromisoformat(payload["closed_at"]))
+        return last
+
     def snapshot(self, marks: dict) -> None:
         """Write one equity snapshot. Needs a mark for every held pair."""
         rep = self.report(marks)

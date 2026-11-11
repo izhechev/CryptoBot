@@ -459,3 +459,71 @@ class Storage:
                 "avg_pnl_pct": round(avg_pnl, 2) if avg_pnl is not None else 0.0,
                 "net_expectancy_pct": round(avg_pnl - cost_pct, 2) if avg_pnl is not None else 0.0,
             }
+
+
+V1_SCHEMA = [
+    """CREATE TABLE IF NOT EXISTS decisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL,
+        cycle_id INTEGER NOT NULL,
+        pair TEXT NOT NULL,
+        strategy TEXT NOT NULL,
+        gate TEXT NOT NULL,
+        verdict TEXT NOT NULL CHECK (verdict IN ('pass','fail','nodata')),
+        enforced INTEGER NOT NULL CHECK (enforced IN (0,1)),
+        detail TEXT NOT NULL,
+        settings_hash TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS quote_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL,
+        cycle_id INTEGER NOT NULL,
+        pair TEXT NOT NULL,
+        bid TEXT,
+        ask TEXT,
+        fetched_at TEXT,
+        usable INTEGER NOT NULL,
+        reason TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS engine_state (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS engine_positions (
+        pair TEXT PRIMARY KEY,
+        strategy TEXT NOT NULL,
+        entry_price TEXT NOT NULL,
+        entry_at TEXT NOT NULL,
+        tp_pct REAL NOT NULL,
+        sl_pct REAL NOT NULL,
+        max_hold_hours REAL NOT NULL,
+        unpriced_flag INTEGER NOT NULL DEFAULT 0)""",
+    """CREATE TABLE IF NOT EXISTS engine_orders (
+        order_id INTEGER PRIMARY KEY,
+        pair TEXT NOT NULL,
+        strategy TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        tp_pct REAL NOT NULL,
+        sl_pct REAL NOT NULL,
+        max_hold_hours REAL NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS engine_pending (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pair TEXT NOT NULL,
+        strategy TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        tp_pct REAL NOT NULL,
+        sl_pct REAL NOT NULL,
+        max_hold_hours REAL NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('armed','done','dropped')))""",
+]
+
+
+def init_v1_tables(db_path: str) -> None:
+    """Create the engine's tables in the existing database. Additive only: the legacy
+    tables and Storage.init() are not touched, and the legacy bot never calls this."""
+    conn = sqlite3.connect(db_path)
+    try:
+        for stmt in V1_SCHEMA:
+            conn.execute(stmt)
+        conn.commit()
+    finally:
+        conn.close()

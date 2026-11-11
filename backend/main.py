@@ -23,7 +23,28 @@ logging.getLogger("backend").setLevel(
 logger = logging.getLogger(__name__)
 
 
+async def _run_v1() -> None:
+    """The paper engine on Kraken prices (engine.mode: v1). Public data only."""
+    from backend.config import load_engine_settings, load_ledger_settings, load_venue_settings
+    from backend.engine import run_v1
+    from backend.feeds import KrakenFeed
+    from backend.kraken_public import KrakenPublic
+
+    cfg = load_config()
+    venue = load_venue_settings()
+    ledger = load_ledger_settings()
+    eng = load_engine_settings()
+    client = KrakenPublic(base_url=venue.base_url, timeout=venue.timeout_seconds)
+    feed = KrakenFeed(client, eng, venue)
+    logger.info("CryptoBot v1 engine (paper, Kraken public prices) starting")
+    await run_v1(cfg, venue, ledger, eng, "cryptobot.db", feed)
+
+
 async def main() -> None:
+    from backend.config import load_engine_settings
+    if load_engine_settings().mode == "v1":
+        await _run_v1()
+        return
     cfg = load_config()
     db = Storage()
     db.init()
