@@ -351,6 +351,17 @@ universe:
   # A pair whose share of empty 15-minute intervals is above this is excluded
   # from history. PROVISIONAL: set after measuring on the archives (pending).
   max_empty_share: 0.05
+  # Live engine (M3): the scan takes the top pairs by 24h euro volume that pass
+  # the floor. Both values are provisional choices, not measured optima.
+  max_pairs: 40
+  min_volume_24h_eur: 100000
+
+# Trading engine (M3). "legacy" keeps the existing bot. "v1" runs the paper engine
+# on Kraken prices and the paper ledger. Legacy stays the default.
+engine:
+  mode: legacy
+  cycle_seconds: 60          # quotes, exits, resting orders, pause check
+  entry_scan_minutes: 15     # candles and entry evaluation
 
 # ---------------------------------------------------------------------------
 # Paper ledger (M2). Read by load_ledger_settings() in config.py. Every limit is
