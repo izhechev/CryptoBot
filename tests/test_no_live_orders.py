@@ -14,8 +14,10 @@ The checks:
      vacuous) and does not flag ordinary market-data calls.
 """
 import ast
+import asyncio
 import re
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -118,13 +120,53 @@ def test_no_exchange_credential_is_read_from_the_environment():
     assert found == [], "exchange credential read from the environment:\n" + "\n".join(found)
 
 
+CREDENTIAL_FIELDS = ("apiKey", "secret", "password", "uid")
+
+
 def test_runtime_exchange_clients_carry_no_credentials():
-    md = MarketData(CFG)
-    clients = list(getattr(md, "_exchanges", []) or [])
+    """Run the real MarketData.init() over the real exchange classes, with no
+    network: only load_markets is replaced, to return a fixed market list.
+    Then check that the clients it actually built have empty credential fields,
+    and that each was constructed with no credential arguments."""
+    import ccxt.async_support as ccxt
+
+    market = {"AAA/USDT": {"spot": True, "active": True}}
+
+    async def fake_load_markets(self, *a, **k):
+        self.markets = market
+        return market
+
+    cls_names = list(CFG.exchanges)
+    constructed = []
+    real_classes = {n: getattr(ccxt, n) for n in cls_names}
+    originals = {n: real_classes[n].__init__ for n in cls_names}
+
+    def recording_init(name):
+        def init(self, config=None, *a, **k):
+            constructed.append((name, dict(config or {})))
+            originals[name](self, config, *a, **k)
+        return init
+
+    patches = [patch.object(real_classes[n], "load_markets", fake_load_markets) for n in cls_names]
+    patches += [patch.object(real_classes[n], "__init__", recording_init(n)) for n in cls_names]
+    for p in patches:
+        p.start()
+    try:
+        md = MarketData(CFG)
+        asyncio.run(md.init())
+        clients = list(md._exchanges)
+        asyncio.run(md.close())
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert clients, "init() built no exchange client, so nothing was checked"
+    assert len(clients) == len(cls_names), f"expected {len(cls_names)} clients, got {len(clients)}"
+    for name, config in constructed:
+        assert not (set(config) & set(CREDENTIAL_FIELDS)), f"{name} built with credentials: {config}"
     for ex in clients:
-        assert not getattr(ex, "apiKey", None), f"{ex.id} has an apiKey"
-        assert not getattr(ex, "secret", None), f"{ex.id} has a secret"
-        assert not getattr(ex, "password", None), f"{ex.id} has a password"
+        for field in CREDENTIAL_FIELDS:
+            assert not getattr(ex, field, None), f"{ex.id}.{field} is set"
 
 
 # ----------------------------------------- the detectors catch what they claim
