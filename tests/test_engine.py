@@ -17,7 +17,7 @@ import pytest
 
 from backend.config import (load_config, load_engine_settings, load_ledger_settings,
                             load_venue_settings)
-from backend.engine import Engine, EngineError, init_account, write_pause
+from backend.engine import Engine, EngineError, init_account, write_pause, write_position
 from backend.feeds import KrakenFeed
 from backend.kraken_public import KrakenPublic, OrderBook, PairRules, Quote
 from tests.offline import no_network  # noqa: F401  (autouse network guard)
@@ -160,7 +160,7 @@ def open_holding(eng: Engine, clock: Clock, pair="AAAEUR", price="100", tp=10.0,
     """A position bought at `price`, built the way the engine builds one."""
     eng._all_rules = {pair: rules(pair)}
     eng.ledger.market_buy(rules(pair), Decimal("10"), Decimal(price))
-    eng._upsert_position(pair, "whale", Decimal(price), clock(), tp, sl, hold)
+    write_position(eng._conn, pair, "whale", Decimal(price), clock(), tp, sl, hold)
 
 
 # ------------------------------------------------------------ account setup and the frozen hash

@@ -44,6 +44,7 @@ def cmd_init(args) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
     print(f"account A created in {args.db}")
+    print(f"engine mode:   {eng.mode}  (run the engine with this same engine.mode; a different mode is refused)")
     print(f"settings hash: {digest}")
     return 0
 
@@ -93,6 +94,9 @@ def cmd_status(args) -> int:
             return row[0] if row else None
         paused, reason = read_pause(conn)
         stored = state("settings_hash")
+        stored_mode = state("engine_mode")
+        print(f"engine mode:   account {stored_mode or 'unknown'}, config {eng.mode}"
+              + ("" if stored_mode in (None, eng.mode) else "  MISMATCH: the engine will refuse to start"))
         print(f"engine:        {'PAUSED' if paused else 'running entries'}"
               + (f"  (reason: {reason})" if paused and reason else ""))
         print(f"last cycle:    {state('last_cycle_at') or 'never'}")

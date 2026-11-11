@@ -374,9 +374,13 @@ class Ledger:
 
     # ------------------------------------------------------------ orders
 
-    def place_limit(self, rules: PairRules, side: str, volume, limit_price) -> int:
+    def place_limit(self, rules: PairRules, side: str, volume, limit_price, hook=None) -> int:
         """Rest a limit order. A buy reserves its notional and maker fee now. A sell
-        reserves its volume from holdings. Returns the order id."""
+        reserves its volume from holdings. Returns the order id.
+
+        `hook(conn, order_id)`, if given, runs inside the same transaction, after the
+        ledger writes and before COMMIT. Any metadata the caller keeps is then committed
+        or rolled back together with the reservation."""
         side = self._side(side)
         vol = _positive(volume, "volume")
         price = _positive(limit_price, "limit_price")
@@ -406,9 +410,11 @@ class Ledger:
             self._event(c, now, "order_placed", order_id,
                         {"pair": pair, "side": side, "kind": "limit", "volume": str(vol),
                          "limit_price": str(price)})
+            if hook is not None:
+                hook(c, order_id)
             return order_id
 
-    def cancel(self, order_id: int) -> None:
+    def cancel(self, order_id: int, hook=None) -> None:
         now = self._clock().isoformat()
         with self._tx() as c:
             st = self._load(c)
@@ -421,8 +427,10 @@ class Ledger:
                       (now, order_id))
             self._save_account(c, st)
             self._event(c, now, "order_cancelled", order_id, {"pair": row["pair"], "side": row["side"]})
+            if hook is not None:
+                hook(c, order_id)
 
-    def fill_limit(self, order_id: int, price) -> int:
+    def fill_limit(self, order_id: int, price, hook=None) -> int:
         """Fill an open limit order. The price must equal the limit: a resting order
         fills at its limit or not at all. Returns the fill id."""
         fill_price = _positive(price, "fill price")
@@ -433,10 +441,13 @@ class Ledger:
             if fill_price != Decimal(row["limit_price"]):
                 raise LedgerError(f"fill at {fill_price} refused: a resting order fills only at "
                                   f"its limit {row['limit_price']}")
-            return self._apply_fill(c, st, row, Decimal(row["volume"]), fill_price, "maker", now,
-                                    locked_fee=Decimal(row["reserved_fee_eur"]))
+            fid = self._apply_fill(c, st, row, Decimal(row["volume"]), fill_price, "maker", now,
+                                   locked_fee=Decimal(row["reserved_fee_eur"]))
+            if hook is not None:
+                hook(c, order_id, fid)
+            return fid
 
-    def market_buy(self, rules: PairRules, notional_eur, price) -> int:
+    def market_buy(self, rules: PairRules, notional_eur, price, hook=None) -> int:
         """Buy about `notional_eur` at `price`, rounded down to Kraken's volume step.
         Fills at once as a taker. Returns the fill id."""
         notional_req = _positive(notional_eur, "notional_eur")
@@ -452,9 +463,12 @@ class Ledger:
             self._check_buy_budget(st, rules.altname, sized.notional, fee)
             oid = self._insert_market_order(c, rules.altname, "buy", sized.volume, ref, now)
             row = c.execute("SELECT * FROM orders WHERE id = ?", (oid,)).fetchone()
-            return self._apply_fill(c, st, row, sized.volume, ref, "taker", now, locked_fee=None)
+            fid = self._apply_fill(c, st, row, sized.volume, ref, "taker", now, locked_fee=None)
+            if hook is not None:
+                hook(c, oid, fid)
+            return fid
 
-    def market_sell(self, rules: PairRules, volume, price) -> int:
+    def market_sell(self, rules: PairRules, volume, price, hook=None) -> int:
         """Sell `volume` at `price` as a taker. Only volume not reserved by another
         sell can be sold. Returns the fill id."""
         vol = _positive(volume, "volume")
@@ -467,7 +481,10 @@ class Ledger:
             self._check_sell_available(st, rules.altname, vol)
             oid = self._insert_market_order(c, rules.altname, "sell", vol, ref, now)
             row = c.execute("SELECT * FROM orders WHERE id = ?", (oid,)).fetchone()
-            return self._apply_fill(c, st, row, vol, ref, "taker", now, locked_fee=None)
+            fid = self._apply_fill(c, st, row, vol, ref, "taker", now, locked_fee=None)
+            if hook is not None:
+                hook(c, oid, fid)
+            return fid
 
     def _side(self, side: str) -> str:
         if side not in ("buy", "sell"):

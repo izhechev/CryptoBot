@@ -80,6 +80,51 @@ def code_commit() -> str:
         return "unknown"
 
 
+# ------------------------------------------------------------------ transactional recorders
+# Each recorder runs inside the ledger's transaction, through the hook argument of the
+# ledger call. A ledger write and its engine metadata therefore commit or roll back
+# together. A crash cannot leave a reservation with no record, or a holding with no record.
+
+def write_position(c, pair: str, strategy: str, price: Decimal, at: datetime,
+                   tp: float, sl: float, hold: float) -> None:
+    c.execute(
+        "INSERT INTO engine_positions (pair, strategy, entry_price, entry_at, tp_pct, sl_pct, "
+        "max_hold_hours, unpriced_flag) VALUES (?, ?, ?, ?, ?, ?, ?, 0) "
+        "ON CONFLICT(pair) DO UPDATE SET strategy = excluded.strategy, "
+        "entry_price = excluded.entry_price, entry_at = excluded.entry_at, tp_pct = excluded.tp_pct, "
+        "sl_pct = excluded.sl_pct, max_hold_hours = excluded.max_hold_hours, unpriced_flag = 0",
+        (pair, strategy, str(price), at.isoformat(), tp, sl, hold))
+
+
+def record_resting_order(c, order_id: int, pair: str, expires_at: datetime,
+                         tp: float, sl: float, hold: float) -> None:
+    c.execute("INSERT INTO engine_orders (order_id, pair, strategy, expires_at, tp_pct, sl_pct, max_hold_hours) "
+              "VALUES (?, ?, 'whale', ?, ?, ?, ?)",
+              (order_id, pair, expires_at.isoformat(), tp, sl, hold))
+
+
+def record_resting_fill(c, order_id: int, pair: str, strategy: str, price: Decimal, at: datetime,
+                        tp: float, sl: float, hold: float) -> None:
+    write_position(c, pair, strategy, price, at, tp, sl, hold)
+    c.execute("DELETE FROM engine_orders WHERE order_id = ?", (order_id,))
+
+
+def record_cancel(c, order_id: int) -> None:
+    c.execute("DELETE FROM engine_orders WHERE order_id = ?", (order_id,))
+
+
+def record_armed_fill(c, pending_id: int, pair: str, strategy: str, price: Decimal, at: datetime,
+                      tp: float, sl: float, hold: float) -> None:
+    write_position(c, pair, strategy, price, at, tp, sl, hold)
+    c.execute("UPDATE engine_pending SET status = 'done' WHERE id = ?", (pending_id,))
+
+
+def record_exit(c, pair: str) -> None:
+    row = c.execute("SELECT qty FROM holdings WHERE pair = ?", (pair,)).fetchone()
+    if row is None or Decimal(row[0]) == 0:
+        c.execute("DELETE FROM engine_positions WHERE pair = ?", (pair,))
+
+
 # ------------------------------------------------------------------ state helpers
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -135,6 +180,7 @@ def init_account(db_path: str, cfg: Config, ledger: LedgerSettings, venue: Venue
         state_set(conn, "settings_file_sha256", file_sha256(config_path), now)
         state_set(conn, "code_commit", code_commit(), now)
         state_set(conn, "account_created_at", now.isoformat(), now)
+        state_set(conn, "engine_mode", eng.mode, now)
         conn.execute("INSERT INTO engine_state (key, value, updated_at) VALUES ('account_name', ?, ?) "
                      "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                      (ledger.name, now.isoformat()))
@@ -162,6 +208,7 @@ class Engine:
         self._conn = _connect(db_path)
         self.hash = effective_settings_hash(cfg, ledger_settings, venue, eng)
         self._verify_account()
+        self._reconcile()
         self._cycle_id = int(state_get(self._conn, "cycle_id", "0"))
         last_scan = state_get(self._conn, "last_scan_at")
         self._last_scan = datetime.fromisoformat(last_scan) if last_scan else None
@@ -178,14 +225,43 @@ class Engine:
 
     def _verify_account(self) -> None:
         if self.ledger._account_row() is None:
-            raise EngineError("no paper account in this database. Create account A first: "
-                              "python -m backend.ctl init --db <path>")
+            raise EngineError("no paper account in this database. Create account A first, with the SAME "
+                              "engine.mode you will run with: python -m backend.ctl init --db <path>")
+        stored_mode = state_get(self._conn, "engine_mode")
+        if stored_mode is not None and stored_mode != self.eng.mode:
+            raise EngineError(f"account A was initialised with engine.mode={stored_mode} but this run uses "
+                              f"engine.mode={self.eng.mode}. Set engine.mode back to {stored_mode}, or create "
+                              f"a new account for {self.eng.mode}.")
         stored = state_get(self._conn, "settings_hash")
         if stored is None:
             raise EngineError("the account has no stored settings hash; it was not created by ctl init")
         if stored != self.hash:
             raise EngineError("settings differ from those account A was created with. A changed setting "
                               "starts a new account; it does not edit this one.")
+
+    def _reconcile(self) -> None:
+        """Refuse to trade if the ledger and the engine's records disagree. With the
+        transactional recorders this should never happen. If it does, a crash or a
+        manual edit happened, and the operator must look before anything else runs."""
+        tracked_orders = {r[0] for r in self._conn.execute("SELECT order_id FROM engine_orders")}
+        tracked_pairs = {r[0] for r in self._conn.execute("SELECT pair FROM engine_positions")}
+        problems = []
+        for o in self.ledger.open_orders():
+            if o["side"] == "buy" and o["id"] not in tracked_orders:
+                problems.append(f"orphaned resting buy #{o['id']} on {o['pair']} (reservation with no record)")
+        for line in self.ledger.report().holdings:
+            if line.pair not in tracked_pairs:
+                problems.append(f"untracked holding {line.qty} {line.pair} (no engine record)")
+        if problems:
+            raise EngineError("ledger and engine records disagree; not starting: " + "; ".join(problems))
+        # Harmless leftovers from before the transactional recorders: drop them.
+        open_ids = {o["id"] for o in self.ledger.open_orders()}
+        for oid in tracked_orders - open_ids:
+            self._conn.execute("DELETE FROM engine_orders WHERE order_id = ?", (oid,))
+
+    def _busy(self, pair: str, held: dict) -> bool:
+        """One active entry per pair across both lanes: held, staged or resting."""
+        return pair in held or self.ledger.holding_qty(pair) > 0 or pair in self._pending_pairs()
 
     def _check_downtime(self) -> None:
         now = self._clock()
@@ -273,16 +349,6 @@ class Engine:
         resting = {r["pair"] for r in self._conn.execute("SELECT pair FROM engine_orders")}
         return armed | resting
 
-    def _upsert_position(self, pair: str, strategy: str, price: Decimal, at: datetime,
-                         tp: float, sl: float, hold: float) -> None:
-        self._conn.execute(
-            "INSERT INTO engine_positions (pair, strategy, entry_price, entry_at, tp_pct, sl_pct, "
-            "max_hold_hours, unpriced_flag) VALUES (?, ?, ?, ?, ?, ?, ?, 0) "
-            "ON CONFLICT(pair) DO UPDATE SET strategy = excluded.strategy, "
-            "entry_price = excluded.entry_price, entry_at = excluded.entry_at, tp_pct = excluded.tp_pct, "
-            "sl_pct = excluded.sl_pct, max_hold_hours = excluded.max_hold_hours, unpriced_flag = 0",
-            (pair, strategy, str(price), at.isoformat(), tp, sl, hold))
-
     # ---------------------------------------------------------- one cycle
 
     async def cycle(self) -> None:
@@ -302,6 +368,9 @@ class Engine:
         wanted = sorted(set(self._universe) | set(held) | {o["pair"] for o in orders}
                         | self._pending_pairs())
         quotes, rejected = await self.feed.quotes(wanted)
+        # Freshness is judged against the time AFTER retrieval. A quote stamped during
+        # the fetch is not future-dated relative to a reference taken before it.
+        now = self._clock()
         self._log_quotes(now, wanted, quotes, rejected)
 
         await self._run_exits(now, held, quotes)
@@ -352,11 +421,10 @@ class Engine:
                     "exit", R.FAIL, False, f"{reason} exit blocked: no pair rules loaded")])
                 continue
             try:
-                self.ledger.market_sell(rules_, line.qty, q.bid)
+                self.ledger.market_sell(rules_, line.qty, q.bid,
+                                        hook=lambda c, oid, fid: record_exit(c, pair))
                 self._decide(now, pair, meta["strategy"], [Verdict(
                     "exit", R.PASS, False, f"{reason} exit: sold {line.qty} at bid {q.bid}")])
-                if self.ledger.holding_qty(pair) == 0:
-                    self._conn.execute("DELETE FROM engine_positions WHERE pair = ?", (pair,))
             except LedgerError as e:
                 self._decide(now, pair, meta["strategy"], [Verdict(
                     "exit", R.FAIL, False, f"{reason} exit refused by ledger: {e}")])
@@ -375,8 +443,7 @@ class Engine:
                 continue
             strategy = rec["strategy"]
             if R.is_expired(datetime.fromisoformat(rec["expires_at"]), now):
-                self.ledger.cancel(oid)
-                self._conn.execute("DELETE FROM engine_orders WHERE order_id = ?", (oid,))
+                self.ledger.cancel(oid, hook=lambda c, order_id: record_cancel(c, order_id))
                 self._decide(now, pair, strategy, [Verdict(
                     "retest", R.FAIL, False, f"expired unfilled; limit {o['limit_price']} was not reached")])
                 continue
@@ -395,12 +462,11 @@ class Engine:
                 self._decide(now, pair, strategy, [controls])
                 continue
             try:
-                self.ledger.fill_limit(oid, limit)
+                self.ledger.fill_limit(oid, limit, hook=lambda c, order_id, fid: record_resting_fill(
+                    c, oid, pair, strategy, limit, now, rec["tp_pct"], rec["sl_pct"], rec["max_hold_hours"]))
             except LedgerError as e:
                 self._decide(now, pair, strategy, [Verdict("ledger", R.FAIL, True, str(e))])
                 continue
-            self._upsert_position(pair, strategy, limit, now, rec["tp_pct"], rec["sl_pct"], rec["max_hold_hours"])
-            self._conn.execute("DELETE FROM engine_orders WHERE order_id = ?", (oid,))
             self._decide(now, pair, strategy, [Verdict(
                 "limit", R.PASS, True, f"ask {q.ask} reached limit {limit}; filled at the limit price")])
 
@@ -432,9 +498,8 @@ class Engine:
                 continue
             notional = Decimal(str(self.ls.default_order_eur))
             try:
-                self.ledger.market_buy(rules_, notional, q.ask)
-                self._upsert_position(pair, strategy, q.ask, now, r["tp_pct"], r["sl_pct"], r["max_hold_hours"])
-                self._set_pending(r["id"], "done")
+                self.ledger.market_buy(rules_, notional, q.ask, hook=lambda c, oid, fid: record_armed_fill(
+                    c, r["id"], pair, strategy, q.ask, now, r["tp_pct"], r["sl_pct"], r["max_hold_hours"]))
                 self._decide(now, pair, strategy, [Verdict("ledger", R.PASS, True,
                                                            f"market buy {notional} EUR at ask {q.ask}")])
             except LedgerError as e:
@@ -445,6 +510,8 @@ class Engine:
         self._conn.execute("UPDATE engine_pending SET status = ? WHERE id = ?", (status, row_id))
 
     def _arm(self, now: datetime, pair: str, strategy: str, tp: float, sl: float, hold: float) -> None:
+        if self._busy(pair, {}):
+            raise EngineError(f"{pair} already has an active entry; a second one is not allowed")
         expires = now + timedelta(seconds=2 * self.eng.cycle_seconds)
         self._conn.execute(
             "INSERT INTO engine_pending (pair, strategy, created_at, expires_at, tp_pct, sl_pct, "
@@ -464,21 +531,32 @@ class Engine:
                     "one_position", R.FAIL, True, "already held or has an open entry for this pair")])
                 continue
             try:
-                await self._scan_pair(now, altname, quotes, bullish)
+                await self._scan_pair(now, altname, quotes, bullish, held)
             except Exception:
                 logger.exception("scan of %s failed; continuing", altname)
                 self._decide(now, altname, "entry", [Verdict("scan", R.NODATA, True,
                                                              "scan error; no entry for this pair")])
 
-    async def _scan_pair(self, now: datetime, altname: str, quotes: dict, bullish: bool) -> None:
+    async def _scan_pair(self, now: datetime, altname: str, quotes: dict, bullish: bool, held: dict) -> None:
         df15 = await self.feed.candles(altname, CANDLE_MIN)
         df4 = await self.feed.candles(altname, FOUR_HOURS_MIN)
         q = quotes.get(altname)
         ok, why = self._usable(q, now)
-        if self.cfg.whale_enabled:
-            await self._whale_lane(now, altname, df15, df4, q, ok, why, bullish)
-        if self.cfg.spot_enabled:
-            await self._spot_lane(now, altname, df15, df4, q, ok, why, bullish)
+        # The whale lane runs first and the spot lane second. Whichever stages an entry
+        # first owns the pair; the other lane is logged as blocked and does nothing.
+        for lane in ("whale", "spot"):
+            if lane == "whale" and not self.cfg.whale_enabled:
+                continue
+            if lane == "spot" and not self.cfg.spot_enabled:
+                continue
+            if self._busy(altname, held):
+                self._decide(now, altname, lane, [Verdict(
+                    "one_position", R.FAIL, True, "an entry for this pair is already staged, resting or held")])
+                continue
+            if lane == "whale":
+                await self._whale_lane(now, altname, df15, df4, q, ok, why, bullish)
+            else:
+                await self._spot_lane(now, altname, df15, df4, q, ok, why, bullish)
 
     def _entry_gates(self, now: datetime, altname: str, q: Quote, df4, notional: Decimal) -> list[Verdict]:
         """The gates shared by both lanes: liquidity and cooldown (enforced) and the
@@ -531,17 +609,14 @@ class Engine:
             return
         limit = round_price(rules_, Decimal(str(sig.thrust_close)), "buy")
         volume = round_volume(rules_, notional / limit)
+        expires = now + timedelta(minutes=CANDLE_MIN * self.cfg.whale_retest_wait_candles)
         try:
-            oid = self.ledger.place_limit(rules_, "buy", volume, limit)
+            self.ledger.place_limit(rules_, "buy", volume, limit, hook=lambda c, order_id: record_resting_order(
+                c, order_id, altname, expires, self.cfg.whale_take_profit_pct,
+                self.cfg.whale_stop_loss_pct, self.cfg.whale_max_hold_hours))
         except LedgerError as e:
             self._decide(now, altname, "whale", [Verdict("ledger", R.FAIL, True, str(e))])
             return
-        expires = now + timedelta(minutes=CANDLE_MIN * self.cfg.whale_retest_wait_candles)
-        self._conn.execute(
-            "INSERT INTO engine_orders (order_id, pair, strategy, expires_at, tp_pct, sl_pct, max_hold_hours) "
-            "VALUES (?, ?, 'whale', ?, ?, ?, ?)",
-            (oid, altname, expires.isoformat(), self.cfg.whale_take_profit_pct,
-             self.cfg.whale_stop_loss_pct, self.cfg.whale_max_hold_hours))
         self._decide(now, altname, "whale", [Verdict(
             "ledger", R.PASS, True, f"retest limit {limit} placed (volume {volume}), expires {expires.isoformat()}")])
 
