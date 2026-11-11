@@ -321,3 +321,33 @@ fear_greed:
   neutral_mult: 1.0
   greed_mult: 0.85
   extreme_greed_mult: 0.7
+
+# ---------------------------------------------------------------------------
+# Venue (paper-trading v1, M1). Read by load_venue_settings() in config.py.
+# None of these keys changes the existing bot: Config does not read them.
+# ---------------------------------------------------------------------------
+venue:
+  name: kraken
+  base_url: https://api.kraken.com   # public endpoints only; no credentials
+  quote_currency: EUR
+  timeout_seconds: 10
+  candle_minutes: 15
+
+quote:
+  # A bid/ask older than this is refused. Kraken's ticker carries no server
+  # timestamp, so age is measured from when this process received the response.
+  max_age_seconds: 30
+
+fees:
+  # Kraken Pro entry tier, in force since 9 July 2026 (plan, Sources). Rates are
+  # fractions of the notional. Only the entry tier is priced: the plan does not
+  # give the next tier's rates, so a higher tier needs a new row here.
+  volume_30d_eur: 0               # trailing 30-day volume used to pick the tier
+  tiers:
+    - {from_volume_30d_eur: 0, maker: 0.0040, taker: 0.0080}
+
+universe:
+  quote_currency: EUR
+  # A pair whose share of empty 15-minute intervals is above this is excluded
+  # from history. PROVISIONAL: set after measuring on the archives (pending).
+  max_empty_share: 0.05
