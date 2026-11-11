@@ -635,3 +635,49 @@ def test_a_holdout_attempt_without_final_is_refused_and_does_not_consume_it(tmp_
     assert run_main(["--source", str(archive), "--period", "holdout", "--final", "--config", CONFIG,
                      "--runs", str(runs), "--out-dir", str(tmp_path / "out")]) == 0
     assert _kinds(runs).count("holdout_read") == 1
+
+
+# ------------------------------------------------------------ review fix: limit crossed on the way down
+
+def test_a_resting_buy_crossed_on_the_way_down_is_stopped_out_in_the_fill_candle(tmp_path):
+    """Open -> low -> high. The candle opens at 104 (ask 104.0988, above the 104 limit),
+    so the limit is crossed on the move down to the low of 90. The fill is at the limit,
+    104. The rest of that move, from 104 down to 90, then passes the 93.60 stop
+    (104 x 0.90), so the position is stopped out in the fill candle, at the stop level.
+    It must not wait for the later high of this candle or for the next candle's target.
+
+    Hand figures (taker 0.8%, maker 0.4%):
+      buy  0.09615384 at 104 = 9.99999936 cost, maker fee 0.0400
+      sell 0.09615384 at 93.6 = 8.999999424 proceeds, taker fee 0.0720
+      realised before fees = 8.999999424 - 9.99999936 = -0.999999936
+      fees = 0.0400 + 0.0720 = 0.1120
+      net = -0.999999936 - 0.1120 = -1.111999936"""
+    frames = scenario_frames()
+    frames["AAAEUR"].loc[START + (SP + 2) * STEP, "low"] = 90.0
+    res = run(frames, END, tmp_path / "down.db")
+    fills = rows(tmp_path / "down.db", "SELECT side, price, created_at FROM fills ORDER BY id")
+    fill_step = (START + (SP + 3) * STEP).isoformat()              # the step that closes the fill candle
+    assert fills[0][0] == "buy" and Decimal(fills[0][1]) == Decimal("104")
+    assert fills[0][2] == fill_step
+    assert fills[1][0] == "sell" and Decimal(fills[1][1]) == Decimal("93.6")
+    assert fills[1][2] == fill_step                                 # the same candle, not the next
+    assert res["results"]["trades"] == 1 and res["results"]["wins"] == 0
+    assert res["results"]["fees_eur"] == "0.112"
+    assert res["results"]["net_eur"] == "-1.111999936"
+    assert Decimal(res["results"]["net_eur"]) < 0
+
+
+def test_a_resting_buy_filled_at_the_open_keeps_the_gap_handling(tmp_path):
+    """The candle opens at 90: its ask, 90.0855, is already at or below the 104 limit, so
+    the buy fills at the open point, at the limit price 104. The open is below the 93.60
+    stop, so the stop is gapped through. The path after the open reaches 85, the stop
+    fires, and it fills at the open bid of 90, the gap rule, not at the 93.60 level."""
+    frames = scenario_frames()
+    ts = START + (SP + 2) * STEP
+    frames["AAAEUR"].loc[ts, ["open", "high", "low", "close"]] = [90.0, 91.0, 85.0, 86.0]
+    run(frames, END, tmp_path / "gap_open.db")
+    fills = rows(tmp_path / "gap_open.db", "SELECT side, price, created_at FROM fills ORDER BY id")
+    fill_step = (START + (SP + 3) * STEP).isoformat()
+    assert fills[0][0] == "buy" and Decimal(fills[0][1]) == Decimal("104")
+    assert fills[1][0] == "sell" and Decimal(fills[1][1]) == Decimal("90")
+    assert fills[1][2] == fill_step

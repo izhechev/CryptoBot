@@ -415,8 +415,8 @@ class Engine:
             entry = Decimal(meta["entry_price"])
             entry_at = datetime.fromisoformat(meta["entry_at"])
             if pair in fills:
-                index, reference = fills[pair]
-                remaining = q.points()[index + 1:]        # only movement after the fill point
+                start, reference = fills[pair]
+                remaining = q.points()[start:]            # only movement after the fill
             else:
                 remaining, reference = q.points(), q.open_point()[0]
             decision = R.exit_decision(entry, remaining, reference, q.close_price_bid(), entry_at, now,
@@ -481,7 +481,16 @@ class Engine:
             except LedgerError as e:
                 self._decide(now, pair, strategy, [Verdict("ledger", R.FAIL, True, str(e))])
                 continue
-            fills[pair] = (fill_index, q.points()[fill_index][0])
+            if fill_index == 0:
+                # Filled at the open point: only the path after the open remains. The open's
+                # bid is the reference, so a gap through a stop or target keeps its handling.
+                fills[pair] = (1, q.points()[0][0])
+            else:
+                # The limit was crossed on the move from the previous point down to this one.
+                # The fill is at the limit, so the rest of that move, to this point's price, is
+                # after the fill and is checked. The reference is the limit: the price at the
+                # crossing, not the point reached afterwards. The earlier points are not used.
+                fills[pair] = (fill_index, limit)
             self._decide(now, pair, strategy, [Verdict(
                 "limit", R.PASS, True, f"ask {q.ask} reached limit {limit}; filled at the limit price")])
 
@@ -516,7 +525,7 @@ class Engine:
                 fill_ask = q.open_point()[1]          # buys fill at the ask of the step's open
                 self.ledger.market_buy(rules_, notional, fill_ask, hook=lambda c, oid, fid: record_armed_fill(
                     c, r["id"], pair, strategy, fill_ask, now, r["tp_pct"], r["sl_pct"], r["max_hold_hours"]))
-                fills[pair] = (0, q.points()[0][0])        # filled at the open point
+                fills[pair] = (1, q.points()[0][0])        # filled at the open point: the path after it
                 self._decide(now, pair, strategy, [Verdict("ledger", R.PASS, True,
                                                            f"market buy {notional} EUR at ask {fill_ask}")])
             except LedgerError as e:
