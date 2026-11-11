@@ -368,3 +368,46 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         fear_greed_greed_mult=float(fg.get("greed_mult", 0.85)),
         fear_greed_extreme_greed_mult=float(fg.get("extreme_greed_mult", 0.7)),
     )
+
+
+# ---------------------------------------------------------------------------
+# Venue settings for paper-trading v1 (M1). Separate from Config so the existing
+# bot's settings object is unchanged. Read from the same YAML file.
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class VenueSettings:
+    name: str
+    base_url: str
+    quote_currency: str
+    timeout_seconds: float
+    candle_minutes: int
+    max_quote_age_seconds: float
+    fee_volume_30d_eur: float
+    fee_tiers: tuple          # tuple of (from_volume_30d_eur, maker, taker) floats
+    max_empty_share: float
+
+
+def load_venue_settings(yaml_path: str = "backend/config.yaml") -> VenueSettings:
+    with open(yaml_path) as f:
+        raw = yaml.safe_load(f)
+    venue = raw["venue"]
+    quote = raw["quote"]
+    fees = raw["fees"]
+    universe = raw["universe"]
+    tiers = tuple(
+        (float(t["from_volume_30d_eur"]), float(t["maker"]), float(t["taker"]))
+        for t in sorted(fees["tiers"], key=lambda t: float(t["from_volume_30d_eur"]))
+    )
+    if not tiers:
+        raise ValueError("fees.tiers must contain at least one tier")
+    return VenueSettings(
+        name=str(venue["name"]),
+        base_url=str(venue["base_url"]),
+        quote_currency=str(venue["quote_currency"]).upper(),
+        timeout_seconds=float(venue["timeout_seconds"]),
+        candle_minutes=int(venue["candle_minutes"]),
+        max_quote_age_seconds=float(quote["max_age_seconds"]),
+        fee_volume_30d_eur=float(fees["volume_30d_eur"]),
+        fee_tiers=tiers,
+        max_empty_share=float(universe["max_empty_share"]),
+    )

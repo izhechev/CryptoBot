@@ -1,0 +1,61 @@
+{
+  "error": [],
+  "result": {
+    "XXBTZEUR": {
+      "altname": "XBTEUR",
+      "wsname": "XBT/EUR",
+      "base": "XXBT",
+      "quote": "ZEUR",
+      "status": "online",
+      "pair_decimals": 1,
+      "lot_decimals": 8,
+      "tick_size": "0.1",
+      "ordermin": "0.0001",
+      "costmin": "5"
+    },
+    "XETHZEUR": {
+      "altname": "ETHEUR",
+      "wsname": "ETH/EUR",
+      "base": "XETH",
+      "quote": "ZEUR",
+      "status": "online",
+      "pair_decimals": 2,
+      "lot_decimals": 8,
+      "tick_size": "0.01",
+      "ordermin": "0.003"
+    },
+    "XDGEUR": {
+      "altname": "DOGEEUR",
+      "wsname": "XDG/EUR",
+      "base": "XXDG",
+      "quote": "ZEUR",
+      "status": "online",
+      "pair_decimals": 6,
+      "lot_decimals": 8,
+      "tick_size": "0.000001",
+      "ordermin": "50"
+    },
+    "XXBTZUSD": {
+      "altname": "XBTUSD",
+      "wsname": "XBT/USD",
+      "base": "XXBT",
+      "quote": "ZUSD",
+      "status": "online",
+      "pair_decimals": 1,
+      "lot_decimals": 8,
+      "tick_size": "0.1",
+      "ordermin": "0.0001"
+    },
+    "OLDEUR": {
+      "altname": "OLDEUR",
+      "wsname": "OLD/EUR",
+      "base": "OLD",
+      "quote": "ZEUR",
+      "status": "delisted",
+      "pair_decimals": 4,
+      "lot_decimals": 8,
+      "tick_size": "0.0001",
+      "ordermin": "1"
+    }
+  }
+}
