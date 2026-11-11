@@ -189,6 +189,8 @@ class AccountReport:
     closed_trades: int
     winning_trades: int
     open_orders: int
+    fee_maker: Optional[Decimal]     # the rates this account was frozen with
+    fee_taker: Optional[Decimal]
 
 
 class Ledger:
@@ -234,7 +236,16 @@ class Ledger:
             self._conn.execute(stmt)
 
     def _settings_json(self) -> str:
-        return json.dumps({k: str(v) for k, v in sorted(self._s.items())}, sort_keys=True)
+        """The frozen account configuration: limits, plus the fee schedule the account
+        was opened with. Any difference from this is refused, so a fee change can never
+        silently alter an existing account."""
+        body = {k: str(v) for k, v in sorted(self._s.items())}
+        body["fee_tiers"] = [[str(t.from_volume_30d_eur), str(t.maker), str(t.taker)]
+                             for t in self._fees.tiers]
+        body["fee_volume_30d_eur"] = str(self._fees.volume_30d_eur)
+        body["fee_tier_in_use"] = {"maker": str(self._fees.tier.maker),
+                                   "taker": str(self._fees.tier.taker)}
+        return json.dumps(body, sort_keys=True)
 
     def _account_row(self):
         try:
@@ -333,11 +344,17 @@ class Ledger:
             raise LedgerError(f"total-exposure limit: {exposure + notional} would exceed "
                               f"€{self._s['max_exposure']}")
 
-    def _check_position(self, st: _State, pair: str, notional: Decimal) -> None:
+    def _check_position(self, st: _State, pair: str, notional: Decimal,
+                        exclude_reserved: Decimal = ZERO) -> None:
+        """Held cost plus every other resting buy on this pair, plus the new notional.
+        `exclude_reserved` is the reservation of the order being filled, which is already
+        in open_buys and must not be counted twice."""
         cost_now = st.holdings[pair].cost if pair in st.holdings else ZERO
-        if cost_now + notional > self._s["max_position"]:
-            raise LedgerError(f"position-size limit: {pair} cost would be {cost_now + notional}, "
-                              f"limit €{self._s['max_position']}")
+        pending = st.open_buys.get(pair, ZERO) - exclude_reserved
+        total = cost_now + pending + notional
+        if total > self._s["max_position"]:
+            raise LedgerError(f"position-size limit: {pair} would hold {cost_now} plus pending "
+                              f"buys {pending} plus {notional} = {total}, limit €{self._s['max_position']}")
 
     def _require_tradeable(self, rules: PairRules) -> None:
         if rules.status != "online":
@@ -495,7 +512,12 @@ class Ledger:
         realised = ZERO
 
         if side == "buy":
-            self._check_position(st, pair, notional)
+            if locked_fee is None:
+                self._check_position(st, pair, notional)
+            else:
+                # This order's own reservation is in open_buys; exclude it, so it is not counted twice.
+                self._check_position(st, pair, notional,
+                                     exclude_reserved=Decimal(order_row["reserved_eur"]))
             if locked_fee is None:
                 # Market buy: the budget was checked before the order was inserted.
                 fee = _fee(notional, rate)
@@ -609,8 +631,12 @@ class Ledger:
                 problems.append(f"{pair}: negative holding")
             if h.qty == 0 and h.cost != 0:
                 problems.append(f"{pair}: cost left on a closed position")
-            if h.cost > s["max_position"]:
-                problems.append(f"{pair}: cost {h.cost} above position limit")
+        for pair in set(st.holdings) | set(st.open_buys):
+            cost = st.holdings[pair].cost if pair in st.holdings else ZERO
+            pending = st.open_buys.get(pair, ZERO)
+            if cost + pending > s["max_position"]:
+                problems.append(f"{pair}: held {cost} plus pending buys {pending} "
+                                f"above position limit {s['max_position']}")
         held = {p for p, h in st.holdings.items() if h.qty > 0}
         pending = set(st.open_buy_count)
         if len(held | pending) > s["max_open"]:
@@ -678,6 +704,9 @@ class Ledger:
                                      mark, src, unreal))
         holdings_cost = sum((h.cost for h in st.holdings.values()), ZERO)
         equity = (st.free + st.reserved + total_value) if total_value is not None else None
+        frozen = json.loads(acc["settings_json"]).get("fee_tier_in_use", {})
+        fee_maker = Decimal(frozen["maker"]) if "maker" in frozen else None
+        fee_taker = Decimal(frozen["taker"]) if "taker" in frozen else None
         return AccountReport(
             name=acc["name"],
             starting_eur=st.starting,
@@ -693,6 +722,8 @@ class Ledger:
             closed_trades=len(closed),
             winning_trades=sum(1 for t in closed if t["result"] == "win"),
             open_orders=open_orders,
+            fee_maker=fee_maker,
+            fee_taker=fee_taker,
         )
 
     def snapshot(self, marks: dict) -> None:
