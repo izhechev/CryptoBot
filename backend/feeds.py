@@ -195,7 +195,7 @@ class HistoricalFeed:
             quotes[pair] = Quote(
                 pair=pair, bid=bid(cl), ask=ask(cl), last=cl,
                 volume_24h=_dec(self._trailing_eur_volume(pair) / max(float(cl), 1e-12)),
-                fetched_at=self.now, path=path, open_bid=bid(o), open_ask=ask(o))
+                fetched_at=self.now, path=path, open_bid=bid(o), open_ask=ask(o), close_bid=bid(cl))
         return quotes, rejected
 
     async def candles(self, altname: str, minutes: int) -> pd.DataFrame:

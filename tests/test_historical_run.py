@@ -38,8 +38,10 @@ from backend.config import (load_backtest_settings, load_config, load_engine_set
                             load_ledger_settings, load_venue_settings)
 from backend.feeds import HistoricalFeed
 from backend.tools import equity_report
-from backend.tools.run_backtest import (HoldoutError, build_record, guard_period, load_frames,
-                                        main as run_main, persist_run, read_log, run_window)
+from backend.tools import run_backtest as RB
+from backend.tools.run_backtest import (HoldoutError, build_record, holdout_gate, load_frames,
+                                        main as run_main, persist_run, read_log,
+                                        record_holdout_read, run_window)
 from tests.offline import no_network  # noqa: F401  (autouse network guard)
 
 CONFIG = str(Path(__file__).resolve().parents[1] / "backend" / "config.yaml")
@@ -159,7 +161,8 @@ def _feed_with_one_bar(open_, high, low, close):
 def _exit_for(open_, high, low, close, entry=Decimal(100), tp=10.0, sl=5.0):
     feed = _feed_with_one_bar(open_, high, low, close)
     q = asyncio.run(feed.quotes(["AAAEUR"]))[0]["AAAEUR"]
-    return R.exit_decision(entry, q.points(), q.open_point()[0], START, START + STEP, tp, sl, 12.0)
+    return R.exit_decision(entry, q.points(), q.open_point()[0], q.close_price_bid(), START,
+                           START + STEP, tp, sl, 12.0)
 
 
 def test_stop_at_95_on_a_candle_trading_only_from_80_to_90_fills_at_the_open():
@@ -187,9 +190,10 @@ def test_a_target_gapped_above_fills_at_the_open():
 
 def test_a_timeout_is_measured_in_time_not_in_candles():
     entry_at = START
-    assert R.exit_decision(Decimal(100), ((Decimal(100), Decimal(100)),), Decimal(100),
+    pts = ((Decimal(100), Decimal(100)),)
+    assert R.exit_decision(Decimal(100), pts, Decimal(100), Decimal(100),
                            entry_at, entry_at + timedelta(hours=11, minutes=45), 10, 10, 12) is None
-    hit = R.exit_decision(Decimal(100), ((Decimal(100), Decimal(100)),), Decimal(100),
+    hit = R.exit_decision(Decimal(100), pts, Decimal(100), Decimal(100),
                           entry_at, entry_at + timedelta(hours=12), 10, 10, 12)
     assert hit == ("timeout", Decimal(100))
 
@@ -397,16 +401,17 @@ def test_no_percentage_is_summed_in_the_report():
 def test_the_holdout_is_refused_without_final_and_the_refusal_is_logged(tmp_path):
     runs = tmp_path / "runs.jsonl"
     with pytest.raises(HoldoutError, match="needs --final"):
-        guard_period("holdout", False, runs, NOW)
+        holdout_gate("holdout", False, runs, NOW)
     kinds = [r["kind"] for r in read_log(runs)]
     assert kinds == ["holdout_refused"]
 
 
 def test_the_holdout_can_be_read_once_and_a_second_read_is_refused(tmp_path):
     runs = tmp_path / "runs.jsonl"
-    guard_period("holdout", True, runs, NOW)
+    holdout_gate("holdout", True, runs, NOW)
+    record_holdout_read(runs, NOW)
     with pytest.raises(HoldoutError, match="already been read once"):
-        guard_period("holdout", True, runs, NOW)
+        holdout_gate("holdout", True, runs, NOW)
     kinds = [r["kind"] for r in read_log(runs)]
     assert kinds.count("holdout_read") == 1
     assert kinds.count("holdout_refused") == 1
@@ -414,8 +419,8 @@ def test_the_holdout_can_be_read_once_and_a_second_read_is_refused(tmp_path):
 
 def test_training_and_validation_need_no_final_flag(tmp_path):
     runs = tmp_path / "runs.jsonl"
-    guard_period("train", False, runs, NOW)
-    guard_period("validation", False, runs, NOW)
+    holdout_gate("train", False, runs, NOW)
+    holdout_gate("validation", False, runs, NOW)
     assert read_log(runs) == []
 
 
@@ -448,3 +453,185 @@ def test_the_command_line_refuses_the_holdout_without_final_before_loading_any_d
     assert rc == 3
     assert "needs --final" in capsys.readouterr().err
     assert [r["kind"] for r in read_log(runs)] == ["holdout_refused"]
+
+
+# ------------------------------------------------------------ review fix 1: same-candle exits after fills
+
+def custom_aaa(overrides: dict):
+    """The whale scenario with specific bars replaced: index -> (open, high, low, close)."""
+    o, h, l, c, v = [100.0] * N, [100.1] * N, [99.9] * N, [100.0] * N, [100.0] * N
+    o[SP], h[SP], l[SP], c[SP], v[SP] = 100, 104.2, 99.9, 104.0, 1000.0
+    o[SP + 1], h[SP + 1], l[SP + 1], c[SP + 1] = 104, 104.5, 103.8, 104.0
+    for i, (oo, hh, ll, cc) in overrides.items():
+        o[i], h[i], l[i], c[i] = oo, hh, ll, cc
+    return _frame(o, h, l, c, v)
+
+
+CHASE = replace(CFG, whale_entry_mode="chase")
+FILL_CANDLE = SP + 2          # chase: armed at the spike's confirmation, filled at this candle's open
+
+
+def _run_with(cfg, frame, db):
+    frames = {"XBTEUR": btc_frame(), "AAAEUR": frame}
+    return asyncio.run(run_window(frames, cfg, VENUE, LS, ENG, BT, CONFIG, START, END, db))
+
+
+def test_a_position_filled_at_the_open_is_stopped_out_in_the_same_candle(tmp_path):
+    # The fill candle opens at 104 (ask 104.0988) and its low is 90: the 10% stop
+    # (entry x 0.90) is hit on the low, within the candle the position was bought in.
+    frame = custom_aaa({FILL_CANDLE: (104, 104.5, 90, 92)})
+    _run_with(CHASE, frame, tmp_path / "stop.db")
+    fills = rows(tmp_path / "stop.db", "SELECT side, price, created_at FROM fills ORDER BY id")
+    assert fills[0][0] == "buy"
+    entry = Decimal(fills[0][1])
+    assert entry == Decimal("104.0988")
+    sell = fills[1]
+    assert sell[0] == "sell" and Decimal(sell[1]) == entry * Decimal("0.90")   # 93.68892
+    assert sell[2] == (START + (FILL_CANDLE + 1) * STEP).isoformat()           # the same candle's step
+
+
+def test_a_position_filled_at_the_open_reaches_its_target_after_filling(tmp_path):
+    # Target = entry x 1.10 = 114.50868. The fill candle's high of 116 reaches it after the fill.
+    frame = custom_aaa({FILL_CANDLE: (104, 116, 103.9, 110)})
+    _run_with(CHASE, frame, tmp_path / "target.db")
+    fills = rows(tmp_path / "target.db", "SELECT side, price FROM fills ORDER BY id")
+    entry = Decimal(fills[0][1])
+    assert fills[1][0] == "sell" and Decimal(fills[1][1]) == entry * Decimal("1.10")
+
+
+def test_a_resting_buy_filled_intrabar_is_checked_only_on_the_path_after_its_fill(tmp_path):
+    # Retest limit at 104 (the spike close). The fill candle opens at 115, ABOVE the 114.4
+    # target that the 104 entry would have. Its low of 103.5 fills the limit, and its high
+    # of 115.5 then reaches the target. The open at 115 happened before the fill: it must
+    # not trigger an exit. The exit is at the target, 114.4, not at the open.
+    frame = custom_aaa({FILL_CANDLE: (115, 115.5, 103.5, 115)})
+    _run_with(CFG, frame, tmp_path / "rest.db")
+    fills = rows(tmp_path / "rest.db", "SELECT side, price, created_at FROM fills ORDER BY id")
+    assert fills[0][0] == "buy" and Decimal(fills[0][1]) == Decimal("104")
+    assert fills[1][0] == "sell" and Decimal(fills[1][1]) == Decimal("114.4")
+    assert fills[1][2] == (START + (FILL_CANDLE + 1) * STEP).isoformat()
+
+
+def test_a_position_is_not_exited_on_prices_from_before_its_fill():
+    # Fill point is the second point (the low). The first point (the open, bid 115) is
+    # before the fill and must be ignored, so it cannot trigger the 114.4 target.
+    entry = Decimal(104)
+    pre_fill_open, fill_low, later_high = (Decimal(115), Decimal(115)), (Decimal(103), Decimal(103)), (Decimal(115.5), Decimal(115.5))
+    remaining = (later_high,)                       # what the engine passes after the fill point
+    decision = R.exit_decision(entry, remaining, fill_low[0], Decimal(115), START, START + timedelta(minutes=15),
+                               10, 10, 12)
+    assert decision == ("target", Decimal("114.4"))
+    assert pre_fill_open[0] >= Decimal("114.4")     # the excluded open would have fired
+
+
+# ------------------------------------------------------------ review fix 2: timeout price
+
+def test_a_timeout_during_a_candle_that_closes_at_80_fills_at_80_not_at_the_open_of_100():
+    # Open 100, low 79, high 100.5, close 80. Stop 70 and target 150 are never reached,
+    # so the timeout is the only exit. It falls during this candle: entry at +2 min, a
+    # 12-minute limit, detected at the candle close (+15 min).
+    candle_open = START
+    entry_at = candle_open + timedelta(minutes=2)
+    now = candle_open + timedelta(minutes=15)        # the step at which the candle closed
+    points = ((Decimal(100), Decimal(100)), (Decimal(79), Decimal(79)), (Decimal("100.5"), Decimal("100.5")))
+    decision = R.exit_decision(Decimal(100), points, Decimal(100), Decimal(80), entry_at, now,
+                               50.0, 30.0, 12 / 60)
+    assert decision == ("timeout", Decimal(80))
+
+
+def test_the_timeout_is_not_filled_before_it_is_detected():
+    candle_open = START
+    entry_at = candle_open + timedelta(minutes=2)
+    earlier_step = candle_open + timedelta(minutes=10)     # the time limit is not yet reached
+    points = ((Decimal(100), Decimal(100)),)
+    assert R.exit_decision(Decimal(100), points, Decimal(100), Decimal(90), entry_at, earlier_step,
+                           50.0, 30.0, 12 / 60) is None
+
+
+# ------------------------------------------------------------ review fix 3: holdout read after validation
+
+SYNTH_ARCHIVE_BARS = [
+    "1785542400,100,101,99,100.5,10,3",   # 2026-08-01 00:00 UTC, a holdout-window bar (synthetic)
+    "1785543300,100.5,101,100,100,10,3",
+]
+
+
+def _synthetic_holdout_archive(folder: Path) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "AAAEUR_15.csv").write_text("\n".join(SYNTH_ARCHIVE_BARS) + "\n", encoding="utf-8")
+    return folder
+
+
+def _stub_run(monkeypatch):
+    """A stand-in runner, so the valid holdout attempt is tested without running the holdout."""
+    async def fake(frames, cfg, venue, ls, eng, bt, config_path, start, end, db_path, feed=None):
+        return {"results": {"equity_eur": "500", "net_eur": "0", "fees_eur": "0",
+                            "largest_drawdown_eur": "0", "trades": 0, "wins": 0,
+                            "open_positions_at_end": 0, "steps": 0},
+                "curve": [{"ts": start.isoformat(), "equity_eur": Decimal(500), "free_eur": Decimal(500),
+                           "reserved_eur": Decimal(0), "holdings_value_eur": Decimal(0)}],
+                "settings_hash": "stub", "fingerprint": "stub", "pairs": ["AAAEUR"],
+                "assumptions": {}}
+    monkeypatch.setattr(RB, "run_window", fake)
+
+
+def _kinds(runs):
+    return [r["kind"] for r in read_log(runs)]
+
+
+def test_a_missing_source_does_not_consume_the_holdout(tmp_path, capsys):
+    runs = tmp_path / "runs.jsonl"
+    rc = run_main(["--source", str(tmp_path / "missing.zip"), "--period", "holdout", "--final",
+                   "--config", CONFIG, "--runs", str(runs), "--out-dir", str(tmp_path / "out")])
+    assert rc == 2
+    assert "cannot load the data" in capsys.readouterr().err
+    assert "holdout_read" not in _kinds(runs)
+
+
+def test_a_malformed_archive_does_not_consume_the_holdout(tmp_path, capsys):
+    bad = tmp_path / "bad.zip"
+    bad.write_bytes(b"this is not a zip archive")
+    runs = tmp_path / "runs.jsonl"
+    rc = run_main(["--source", str(bad), "--period", "holdout", "--final",
+                   "--config", CONFIG, "--runs", str(runs), "--out-dir", str(tmp_path / "out")])
+    assert rc == 2
+    assert "holdout_read" not in _kinds(runs)
+
+
+def test_an_archive_with_no_bars_in_the_holdout_window_does_not_consume_it(tmp_path, capsys):
+    folder = tmp_path / "early"
+    folder.mkdir()
+    (folder / "AAAEUR_15.csv").write_text("1767225600,100,101,99,100,10,3\n", encoding="utf-8")  # 2026-01-01
+    runs = tmp_path / "runs.jsonl"
+    rc = run_main(["--source", str(folder), "--period", "holdout", "--final",
+                   "--config", CONFIG, "--runs", str(runs), "--out-dir", str(tmp_path / "out")])
+    assert rc == 2
+    assert "no bars" in capsys.readouterr().err
+    assert "holdout_read" not in _kinds(runs)
+
+
+def test_a_valid_holdout_attempt_is_allowed_once_and_a_second_is_refused(tmp_path, monkeypatch, capsys):
+    _stub_run(monkeypatch)
+    archive = _synthetic_holdout_archive(tmp_path / "archive")
+    runs = tmp_path / "runs.jsonl"
+    args = ["--source", str(archive), "--period", "holdout", "--final",
+            "--config", CONFIG, "--runs", str(runs), "--out-dir", str(tmp_path / "out")]
+    assert run_main(args) == 0
+    assert _kinds(runs).count("holdout_read") == 1
+    assert run_main(args) == 3
+    kinds = _kinds(runs)
+    assert kinds.count("holdout_read") == 1
+    assert kinds.count("holdout_refused") == 1
+
+
+def test_a_holdout_attempt_without_final_is_refused_and_does_not_consume_it(tmp_path, monkeypatch, capsys):
+    _stub_run(monkeypatch)
+    archive = _synthetic_holdout_archive(tmp_path / "archive")
+    runs = tmp_path / "runs.jsonl"
+    rc = run_main(["--source", str(archive), "--period", "holdout", "--config", CONFIG,
+                   "--runs", str(runs), "--out-dir", str(tmp_path / "out")])
+    assert rc == 3
+    assert _kinds(runs) == ["holdout_refused"]
+    assert run_main(["--source", str(archive), "--period", "holdout", "--final", "--config", CONFIG,
+                     "--runs", str(runs), "--out-dir", str(tmp_path / "out")]) == 0
+    assert _kinds(runs).count("holdout_read") == 1

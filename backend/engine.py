@@ -373,11 +373,14 @@ class Engine:
         now = self._clock()
         self._log_quotes(now, wanted, quotes, rejected)
 
-        # Armed entries first: a position bought at this step's open is then checked
-        # against this step's range, as it would be on the candle it was bought in.
-        await self._run_armed(now, quotes)
-        await self._run_resting(now, orders, quotes)
-        await self._run_exits(now, held, quotes)
+        # Entries fill first, then exits are checked. A position filled in this step is
+        # exited only against the price movement after its fill point, never against
+        # prices from before it.
+        fills_this_step: dict = {}
+        await self._run_armed(now, quotes, fills_this_step)
+        await self._run_resting(now, orders, quotes, fills_this_step)
+        held = {line.pair: line for line in self.ledger.report().holdings}
+        await self._run_exits(now, held, quotes, fills_this_step)
         if scan_due:
             await self._entry_scan(now, quotes, held)
             self._last_scan = now
@@ -386,7 +389,7 @@ class Engine:
 
     # ---------------------------------------------------------- exits (never paused)
 
-    async def _run_exits(self, now: datetime, held: dict, quotes: dict) -> None:
+    async def _run_exits(self, now: datetime, held: dict, quotes: dict, fills: dict) -> None:
         for pair, line in held.items():
             meta = self._meta(pair)
             if meta is None:
@@ -411,7 +414,12 @@ class Engine:
                 self.ledger.log_event("position_priced_again", {"pair": pair, "at": now.isoformat()})
             entry = Decimal(meta["entry_price"])
             entry_at = datetime.fromisoformat(meta["entry_at"])
-            decision = R.exit_decision(entry, q.points(), q.open_point()[0], entry_at, now,
+            if pair in fills:
+                index, reference = fills[pair]
+                remaining = q.points()[index + 1:]        # only movement after the fill point
+            else:
+                remaining, reference = q.points(), q.open_point()[0]
+            decision = R.exit_decision(entry, remaining, reference, q.close_price_bid(), entry_at, now,
                                        meta["tp_pct"], meta["sl_pct"], meta["max_hold_hours"])
             if decision is None:
                 self._decide(now, pair, meta["strategy"], [Verdict(
@@ -434,7 +442,7 @@ class Engine:
 
     # ---------------------------------------------------------- resting buys
 
-    async def _run_resting(self, now: datetime, orders: list, quotes: dict) -> None:
+    async def _run_resting(self, now: datetime, orders: list, quotes: dict, fills: dict) -> None:
         for o in orders:
             if o["side"] != "buy":
                 continue
@@ -457,7 +465,9 @@ class Engine:
                 continue
             limit = Decimal(o["limit_price"])
             # Any point of the step (open, low, high, in order) whose ask reached the limit.
-            if not any(R.limit_buy_fills(limit, ask) for _bid, ask in q.points()):
+            fill_index = next((i for i, (_bid, ask) in enumerate(q.points())
+                               if R.limit_buy_fills(limit, ask)), None)
+            if fill_index is None:
                 self._decide(now, pair, strategy, [Verdict(
                     "limit", R.FAIL, False, f"ask {q.ask} has not reached limit {limit}")])
                 continue
@@ -471,12 +481,13 @@ class Engine:
             except LedgerError as e:
                 self._decide(now, pair, strategy, [Verdict("ledger", R.FAIL, True, str(e))])
                 continue
+            fills[pair] = (fill_index, q.points()[fill_index][0])
             self._decide(now, pair, strategy, [Verdict(
                 "limit", R.PASS, True, f"ask {q.ask} reached limit {limit}; filled at the limit price")])
 
     # ---------------------------------------------------------- armed market entries
 
-    async def _run_armed(self, now: datetime, quotes: dict) -> None:
+    async def _run_armed(self, now: datetime, quotes: dict, fills: dict) -> None:
         rows = self._conn.execute("SELECT * FROM engine_pending WHERE status = 'armed' ORDER BY id").fetchall()
         for r in rows:
             pair, strategy = r["pair"], r["strategy"]
@@ -505,6 +516,7 @@ class Engine:
                 fill_ask = q.open_point()[1]          # buys fill at the ask of the step's open
                 self.ledger.market_buy(rules_, notional, fill_ask, hook=lambda c, oid, fid: record_armed_fill(
                     c, r["id"], pair, strategy, fill_ask, now, r["tp_pct"], r["sl_pct"], r["max_hold_hours"]))
+                fills[pair] = (0, q.points()[0][0])        # filled at the open point
                 self._decide(now, pair, strategy, [Verdict("ledger", R.PASS, True,
                                                            f"market buy {notional} EUR at ask {fill_ask}")])
             except LedgerError as e:

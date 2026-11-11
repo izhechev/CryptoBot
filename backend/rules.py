@@ -154,36 +154,40 @@ def fear_greed_shadow(reading: Optional[tuple]) -> Verdict:
 
 # ----------------------------------------------------------------- exits and fills
 
-def exit_decision(entry_price: Decimal, points, open_bid: Decimal, entry_at: datetime,
-                  now: datetime, tp_pct: float, sl_pct: float, max_hold_hours: float):
+def exit_decision(entry_price: Decimal, points, reference_bid: Decimal, close_bid: Decimal,
+                  entry_at: datetime, now: datetime, tp_pct: float, sl_pct: float, max_hold_hours: float):
     """The exit rule, shared by forward trading and history.
 
-    `points` are the (bid, ask) points of the step, in order: open, low, high. A live
-    quote is one point, so the same code gives the live answer.
+    `points` are the (bid, ask) points still to be checked, in path order (open, low, high
+    within a candle). They must hold only price movement AFTER the position's fill: the
+    caller drops the points at or before the fill point. A live quote is one point.
 
-    * Stop: fills at the stop level, or at the open if the open already gapped through it.
-    * Target: fills at the target level, or at the open if the open gapped above it.
-    * At each point the stop is checked before the target. Within one candle, the low
-      comes before the high, so a stop and a target in the same candle resolve to the stop.
-    * Timeout: a time limit on timestamps, filled at the open bid.
+    * `reference_bid` is the bid at the fill point, the last price before `points`.
+      A stop that is gapped through (the first point is already below the stop) fills
+      at that reference price, and a target gapped above fills at it too.
+    * Stop before target at each point. Low comes before high, so a stop and a target
+      in one candle resolve to the stop.
+    * Timeout, detected at the step time `now`, fills at `close_bid`: the close of the
+      candle in which the time limit was reached. That is the first closed price at or
+      after the timeout. The earlier open is never used for it.
 
     Returns (reason, fill_price) or None."""
     stop_level = entry_price * (Decimal(1) - Decimal(str(sl_pct)) / 100)
     target_level = entry_price * (Decimal(1) + Decimal(str(tp_pct)) / 100)
     for bid, _ask in points:
         if bid <= stop_level:
-            return "stop", min(open_bid, stop_level)
+            return "stop", min(reference_bid, stop_level)
         if bid >= target_level:
-            return "target", max(open_bid, target_level)
+            return "target", max(reference_bid, target_level)
     if now - entry_at >= timedelta(hours=max_hold_hours):
-        return "timeout", open_bid
+        return "timeout", close_bid
     return None
 
 
 def exit_reason(entry_price: Decimal, bid: Decimal, entry_at: datetime, now: datetime,
                 tp_pct: float, sl_pct: float, max_hold_hours: float) -> Optional[str]:
     """Reason only, for a single live bid. Kept for callers that need no price."""
-    decision = exit_decision(entry_price, ((bid, bid),), bid, entry_at, now, tp_pct, sl_pct, max_hold_hours)
+    decision = exit_decision(entry_price, ((bid, bid),), bid, bid, entry_at, now, tp_pct, sl_pct, max_hold_hours)
     return decision[0] if decision else None
 
 
