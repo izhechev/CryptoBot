@@ -67,9 +67,13 @@ class Quote:
     path: tuple = ()
     open_bid: Optional[Decimal] = None
     open_ask: Optional[Decimal] = None
+    close_bid: Optional[Decimal] = None   # historical: the candle's close, used for timeouts
 
     def points(self) -> tuple:
         return self.path or ((self.bid, self.ask),)
+
+    def close_price_bid(self) -> Decimal:
+        return self.close_bid if self.close_bid is not None else self.bid
 
     def open_point(self) -> tuple:
         if self.open_bid is not None and self.open_ask is not None:

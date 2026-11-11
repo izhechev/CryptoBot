@@ -23,6 +23,7 @@ import csv
 import hashlib
 import json
 import sys
+import zipfile
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -71,20 +72,29 @@ def append_log(runs_path: Path, record: dict) -> None:
         f.write(json.dumps(record, sort_keys=True) + "\n")
 
 
-def guard_period(period: str, final: bool, runs_path: Path, now: datetime) -> None:
-    """Enforce the holdout rules. Every attempt is logged, whether it is refused or allowed."""
+def holdout_gate(period: str, final: bool, runs_path: Path, now: datetime) -> None:
+    """Refuse the holdout unless --final is given and it has not been read. A refusal is
+    logged. An allowed attempt is NOT logged here: the read is recorded only after the
+    holdout data has loaded, by record_holdout_read()."""
     if period != "holdout":
         return
-    prior_reads = [r for r in read_log(runs_path) if r.get("kind") == "holdout_read"]
     if not final:
         append_log(runs_path, {"kind": "holdout_refused", "reason": "missing --final",
                                "at": now.isoformat()})
         raise HoldoutError("the holdout needs --final; this attempt is logged and refused")
-    if prior_reads:
+    if any(r.get("kind") == "holdout_read" for r in read_log(runs_path)):
         append_log(runs_path, {"kind": "holdout_refused", "reason": "already read once",
                                "at": now.isoformat()})
         raise HoldoutError("the holdout has already been read once; a second read is refused")
+
+
+def record_holdout_read(runs_path: Path, now: datetime) -> None:
+    """Record that the holdout data has been read. Call only after it has loaded."""
     append_log(runs_path, {"kind": "holdout_read", "at": now.isoformat()})
+
+
+class SourceError(RuntimeError):
+    """The archive is missing, malformed, or holds no data for the requested window."""
 
 
 # ----------------------------------------------------------------- data
@@ -93,6 +103,25 @@ def period_window(bt: BacktestSettings, period: str) -> tuple[datetime, datetime
     if period not in bt.periods:
         raise ValueError(f"unknown period {period!r}; configured: {', '.join(sorted(bt.periods))}")
     return bt.periods[period]
+
+
+def load_source(source: Path, pairs, start: datetime, end: datetime) -> dict:
+    """Validate the archive and load the requested pairs for the window. Raises SourceError
+    for anything that cannot give data: a missing path, no pairs, or no bars in the window."""
+    source = Path(source)
+    if not source.exists():
+        raise SourceError(f"no such file or folder: {source}")
+    available = list_pairs(source)
+    if not available:
+        raise SourceError("the archive lists no pairs")
+    wanted = list(pairs) if pairs else available
+    unknown = [p for p in wanted if p not in available]
+    if unknown:
+        raise SourceError(f"pairs not in the archive: {', '.join(unknown)}")
+    frames = load_frames(source, wanted, start, end)
+    if not frames:
+        raise SourceError(f"no bars in {start.date()} to {end.date()} for the requested pairs")
+    return frames
 
 
 def load_frames(source: Path, pairs: list[str], start: datetime, end: datetime) -> dict:
@@ -268,7 +297,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     now = datetime.now(timezone.utc)
     try:
-        guard_period(args.period, args.final, args.runs, now)
+        holdout_gate(args.period, args.final, args.runs, now)
     except HoldoutError as e:
         print(f"refused: {e}", file=sys.stderr)
         return 3
@@ -279,11 +308,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     eng = load_engine_settings(args.config)
     bt = load_backtest_settings(args.config)
     start, end = period_window(bt, args.period)
-    pairs = args.pairs or list_pairs(args.source)
-    frames = load_frames(args.source, pairs, start, end)
-    if not frames:
-        print("error: no data in the window for the requested pairs", file=sys.stderr)
+    try:
+        frames = load_source(args.source, args.pairs, start, end)
+    except (SourceError, OSError, ValueError, KeyError, zipfile.BadZipFile) as e:
+        # Nothing has been read from the holdout yet, so a failed load does not use it up.
+        print(f"error: cannot load the data from {args.source}: {e}", file=sys.stderr)
         return 2
+    if args.period == "holdout":
+        record_holdout_read(args.runs, now)
 
     label = args.label or args.period
     out = args.out_dir
