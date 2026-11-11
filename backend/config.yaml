@@ -351,3 +351,19 @@ universe:
   # A pair whose share of empty 15-minute intervals is above this is excluded
   # from history. PROVISIONAL: set after measuring on the archives (pending).
   max_empty_share: 0.05
+
+# ---------------------------------------------------------------------------
+# Paper ledger (M2). Read by load_ledger_settings() in config.py. Every limit is
+# required and must be positive: zero is refused, never read as "unlimited".
+# The first three values are from the plan. The three limits are this milestone's
+# conservative defaults, chosen because the plan gives none. Change them only
+# before an account is created: a stored account refuses different settings.
+# ---------------------------------------------------------------------------
+ledger:
+  name: paper-eur-500
+  starting_eur: 500          # plan: €500 simulated account
+  reserve_eur: 150           # plan: free cash never falls below this
+  default_order_eur: 10      # plan: €10 positions by default
+  max_position_eur: 20       # cost of one pair's holding, buys included: 2 default orders
+  max_open_positions: 5      # distinct pairs held or with an open buy: 5 x €20 max
+  max_total_exposure_eur: 100  # holdings at cost plus reserved buy money: under €350 deployable
