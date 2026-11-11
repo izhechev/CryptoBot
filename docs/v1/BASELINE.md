@@ -25,9 +25,9 @@ This file is part of that commit, so it cannot name its own hash.
 | Run | Passed | xfailed | Collected |
 | --- | --- | --- | --- |
 | Base `05e14f9` (before M0) | 311 | 0 | 311 |
-| `paper-v1` after M0 | 345 | 16 | 361 |
+| `paper-v1` after M0 (follow-up) | 344 | 15 | 359 |
 
-The 50 new collected tests are 16 pinned defect tests, 16 correct-behaviour
+The 48 new collected tests are 15 pinned defect tests, 15 correct-behaviour
 tests marked xfail, and 18 guard tests. The 311 existing tests are unchanged.
 
 Command: `python -m pytest -q`
@@ -46,7 +46,6 @@ File: `tests/review/test_known_defects.py`. Each defect has two kinds of test:
 | ID | Defect | Where | Status on base |
 | --- | --- | --- | --- |
 | T1 | Whale retest order is silently dropped under the committed config (`max_open=0`) | `tracker.py` | pinned, correct xfail |
-| T2 | Retest fill is booked at a later, lower price (97) rather than the limit (100) | `tracker.py` | pinned, correct xfail |
 | T3 | Backtest BTC regime at 04:15 changes when only the 07:45 close changes | `backtest.py` | pinned, correct xfail |
 | T4 | Training-trade result changes when only holdout candles change | `backtest.py` | pinned, correct xfail |
 | T5 | Gapped stop fills at the stop (95), not the candle open (90) | `backtest.py` | pinned, correct xfail |
@@ -59,12 +58,24 @@ File: `tests/review/test_known_defects.py`. Each defect has two kinds of test:
 | T13 | Order-book gate passes a book holding about $10 a side for a $1,000 order | `gates.py`, `market_data.py` | pinned, correct xfail |
 | T14 | Position with no price is closed at entry as a 0% timeout | `tracker.py` | pinned, correct xfail |
 
-There is no T12. `repro.py` has 13 cases numbered T1 to T14 with T12 absent, so
-the count is 13. The skipped number is not recoverable from the files provided.
+Twelve of the thirteen cases in `repro.py` are kept as pairs. T2 is not one of
+them; see "Execution-model limitation" below. There is no T12: `repro.py`
+numbers its cases T1 to T14 with T12 absent, and the reason is not recoverable
+from the files provided.
 
 Every correct-behaviour test was run with `--runxfail` and fails on its own
-assertion, not on an exception. For example, T2 reports `97.0 == 100.0` and T9
-reports `90.0 == 98.0`.
+assertion, not on an exception. For example, T9 reports `90.0 == 98.0` and T10
+reports `'win' == 'loss'`.
+
+### Execution-model limitation: T2 (fill price)
+
+`repro.py` T2 showed a resting buy limit at 100 booked at 97 when the next
+polled price was 97. This is **not** recorded as a defect. A buy limit of 100
+may fill at 100 or at a lower price, depending on the exchange's matching and
+the order's place in the queue, and the current price snapshot cannot establish
+which. Until the paper engine has a fill model that is justified by order-book
+or trade data, the 97 fill is a limitation of the current simulation, not a
+proven bug, and no test asserts either price.
 
 ## Guard against live orders
 
@@ -77,7 +88,11 @@ runs offline and never imports the exchange library. It fails if:
 2. any exchange client is built with `apiKey`, `secret`, `password`, `uid` or
    `privateKey`;
 3. any exchange-named credential is read from the environment;
-4. a runtime exchange client from `MarketData` carries a key or secret.
+4. the exchange clients that the real `MarketData.init()` builds carry no
+   credentials. This runs over the real exchange classes in the config. Only
+   `load_markets` is replaced, to return a fixed market list. The test also
+   checks the arguments each constructor received, and that it built one client
+   per configured exchange, so it cannot pass on an empty list.
 
 The detector is tested on snippets. The guard was also checked by planting an
 order call and a key in a temporary module. It failed, and the module was then
@@ -115,6 +130,8 @@ prerequisite for M1 and is not an M0 code change.
 - The pinned tests record today's defects; they are not endorsements. Some
   pinned assertions match exact values from the repro output, so a change in
   the synthetic fixtures will need them updated.
+- T2 has no test pair, so the fill-price model is unchecked by M0. It is an M3
+  question, to be settled with order-book or trade data.
 - The T13 correct-behaviour test calls `book_gate(cfg, stats)`, the current
   signature. A fix that changes that signature will make the test error, which
   is intended: it then needs rewriting, not a silent pass.

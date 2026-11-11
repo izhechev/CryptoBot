@@ -1,7 +1,9 @@
 """Known defects from the 11 Nov 2026 review, as tests.
 
 Source: repro.py / repro_output.txt (regime-fixes-and-coin-inspector @ 05e14f9).
-Each defect (T1..T14; there is no T12 in repro.py) has two tests:
+Twelve of the thirteen repro cases are here. T2 (fill price) is not: a 97 fill
+is not established as wrong, and it is recorded as a limitation in
+docs/v1/BASELINE.md. There is no T12 in repro.py. Each test pair has:
 
   * test_Tn_documents_... -- PINS THE CURRENT WRONG BEHAVIOUR. It passes today,
     so the defect is on record. Delete it when the defect is fixed.
@@ -76,7 +78,7 @@ def _pending(limit=100.0) -> PendingOrder:
                         exchange="kraken", volume_ratio=4.0, thrust_pct=5.0)
 
 
-# ------------------------------------------------------- T1 / T2 retest orders
+# ------------------------------------------------------- T1 retest orders
 def test_T1_documents_retest_order_is_silently_dropped_with_committed_config(tmp_path):
     """Committed config (entry_mode=retest, whale.max_open=0): a buy limit at 100
     with price at 99 opens nothing and leaves no pending order behind."""
@@ -97,30 +99,6 @@ def test_T1_correct_retest_order_fills_when_price_reaches_limit(tmp_path):
     db.save_pending_order(_pending(100.0))
     asyncio.run(tr._process_pendings(db.get_pending_orders(), {"AAA": 99.0}))
     assert len(db.get_open_positions()) == 1
-
-
-def test_T2_documents_retest_fill_booked_at_later_lower_price(tmp_path):
-    """Limit 100, next polled price 97: the paper fill is booked at 97."""
-    db = _db(tmp_path)
-    cfg = replace(CFG, whale_max_open=6)
-    tr = Tracker(cfg, db, journal_path=str(tmp_path / "j.csv"))
-    db.save_pending_order(_pending(100.0))
-    asyncio.run(tr._process_pendings(db.get_pending_orders(), {"AAA": 97.0}))
-    positions = db.get_open_positions()
-    assert len(positions) == 1
-    assert positions[0].entry_price == 97.0
-
-
-@xfail_defect("T2: a resting buy limit fills at its limit (100), not at a later lower price (97)")
-def test_T2_correct_limit_fill_is_booked_at_limit_price(tmp_path):
-    db = _db(tmp_path)
-    cfg = replace(CFG, whale_max_open=6)
-    tr = Tracker(cfg, db, journal_path=str(tmp_path / "j.csv"))
-    db.save_pending_order(_pending(100.0))
-    asyncio.run(tr._process_pendings(db.get_pending_orders(), {"AAA": 97.0}))
-    positions = db.get_open_positions()
-    assert len(positions) == 1
-    assert positions[0].entry_price == 100.0
 
 
 # ------------------------------------------------------------ T3 future regime
