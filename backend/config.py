@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from datetime import timedelta
 import os
 import yaml
 from dotenv import load_dotenv
@@ -503,4 +504,51 @@ def load_engine_settings(yaml_path: str = "backend/config.yaml") -> EngineSettin
         entry_scan_minutes=float(eng.get("entry_scan_minutes", 15)),
         max_pairs=int(uni.get("max_pairs", 40)),
         min_volume_24h_eur=float(uni.get("min_volume_24h_eur", 100000)),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Historical run settings (M4).
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class BacktestSettings:
+    step_minutes: int
+    half_spread_pct: float
+    slippage_pct: float
+    min_notional_eur: float
+    candle_limit: int
+    periods: dict            # name -> (start: datetime, end: datetime), tz-aware UTC
+
+    def __post_init__(self):
+        if self.step_minutes != 15:
+            raise ValueError("backtest.step_minutes must be 15: the archives are 15-minute candles")
+        if self.half_spread_pct < 0 or self.slippage_pct < 0:
+            raise ValueError("backtest costs must not be negative")
+        if self.min_notional_eur <= 0 or self.candle_limit < 300:
+            raise ValueError("backtest.min_notional_eur must be > 0 and candle_limit >= 300")
+        for name, (start, end) in self.periods.items():
+            if not end > start:
+                raise ValueError(f"backtest period {name} ends before it starts")
+        by_start = sorted(self.periods.items(), key=lambda kv: kv[1][0])
+        for (a_name, (_, a_end)), (b_name, (b_start, _)) in zip(by_start, by_start[1:]):
+            if b_start - a_end < timedelta(hours=24):
+                raise ValueError(f"periods {a_name} and {b_name} need a gap of at least 24 hours")
+
+
+def load_backtest_settings(yaml_path: str = "backend/config.yaml") -> BacktestSettings:
+    from datetime import datetime as _dt, timezone as _tz
+    with open(yaml_path) as f:
+        raw = yaml.safe_load(f)
+    bt = raw["backtest"]
+    periods = {}
+    for name, p in bt["periods"].items():
+        periods[name] = (_dt.fromisoformat(str(p["start"]).replace("Z", "+00:00")).astimezone(_tz.utc),
+                         _dt.fromisoformat(str(p["end"]).replace("Z", "+00:00")).astimezone(_tz.utc))
+    return BacktestSettings(
+        step_minutes=int(bt["step_minutes"]),
+        half_spread_pct=float(bt["half_spread_pct"]),
+        slippage_pct=float(bt["slippage_pct"]),
+        min_notional_eur=float(bt["min_notional_eur"]),
+        candle_limit=int(bt["candle_limit"]),
+        periods=periods,
     )

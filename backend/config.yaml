@@ -378,3 +378,22 @@ ledger:
   max_position_eur: 20       # cost of one pair's holding, buys included: 2 default orders
   max_open_positions: 5      # distinct pairs held or with an open buy: 5 x €20 max
   max_total_exposure_eur: 100  # holdings at cost plus reserved buy money: under €350 deployable
+
+# ---------------------------------------------------------------------------
+# Historical runs (M4). The data is the difference; the engine and rules are the
+# same as forward trading. Values marked ASSUMED are labelled guesses, not measured
+# facts: the archives carry no bid/ask, depth or pair rules.
+# ---------------------------------------------------------------------------
+backtest:
+  step_minutes: 15            # one engine step per closed 15-minute candle
+  half_spread_pct: 0.045      # ASSUMED: half of a 0.09% spread (top of the M1 ten-pair snapshot)
+  slippage_pct: 0.05          # ASSUMED, conservative: added to the ask on buys only (plan M4)
+  min_notional_eur: 5         # ASSUMED uniform minimum order for every pair: no pair rules in archives
+  candle_limit: 720           # most recent closed candles the feed shows, as Kraken does
+  # Periods. Each end is 24 hours before the next start, so the 24-hour gap is the
+  # time between one end and the next start. Holdout needs --final to run.
+  periods:
+    train:      {start: "2026-01-01T00:00:00Z", end: "2026-05-31T00:00:00Z"}
+    validation: {start: "2026-06-01T00:00:00Z", end: "2026-07-31T00:00:00Z"}
+    holdout:    {start: "2026-08-01T00:00:00Z", end: "2026-09-30T00:00:00Z"}
+

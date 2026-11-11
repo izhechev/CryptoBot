@@ -10,7 +10,9 @@ This rule uses the current listing only. It is a live choice, not a historical o
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import hashlib
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Callable, Optional
 
 import pandas as pd
@@ -82,3 +84,145 @@ class KrakenFeed:
             return await fetch_fear_greed()
         except Exception:
             return None
+
+
+# ---------------------------------------------------------------------------
+# Historical feed (M4). The same engine reads it through the same methods as the
+# live feed. Only the data differs. Nothing returned depends on any time after
+# `now`, the current step.
+# ---------------------------------------------------------------------------
+CANDLE = timedelta(minutes=15)
+
+
+def synthetic_rules(pair: str, min_notional_eur: float) -> PairRules:
+    """Pair rules for history. The archives carry none, so every pair gets the same
+    assumed minimum notional and no tick or volume-step rounding."""
+    base = pair[:-3] if pair.endswith("EUR") else pair
+    return PairRules(altname=pair, key=pair, base=base, quote="ZEUR", status="online",
+                      price_decimals=8, volume_decimals=8, tick_size=Decimal("0.00000001"),
+                      min_volume=Decimal("0"), min_cost=Decimal(str(min_notional_eur)))
+
+
+def _dec(x: float) -> Decimal:
+    return Decimal(repr(float(x)))
+
+
+class HistoricalFeed:
+    """Recorded 15-minute bars served as the engine's feed.
+
+    frames: pair -> DataFrame indexed by candle open time (UTC), columns open, high,
+            low, close, volume. Only intervals with trades are present; the rest are
+            absent, so the engine sees no price for them.
+    The runner sets `now` to each step time before the engine's cycle.
+    """
+
+    def __init__(self, frames: dict, bt, eng, min_volume_24h_eur: float, max_pairs: int,
+                 half_spread_pct: float, slippage_pct: float, candle_limit: int):
+        self._m15 = {p: f.sort_index() for p, f in frames.items() if len(f)}
+        self._h4 = {p: self._resample_4h(f) for p, f in self._m15.items()}
+        self.all_pairs = {p: synthetic_rules(p, bt.min_notional_eur) for p in self._m15}
+        self._min_vol = float(min_volume_24h_eur)
+        self._max_pairs = int(max_pairs)
+        self._h = Decimal(repr(half_spread_pct)) / 100
+        self._hb = self._h + Decimal(repr(slippage_pct)) / 100
+        self._limit = int(candle_limit)
+        self.now = None
+        self._universe_day = None
+        self._universe = {}
+
+    @staticmethod
+    def _resample_4h(f):
+        out = f.resample("4h", label="left", closed="left").agg(
+            {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+        return out.dropna(subset=["close"])
+
+    # -- bars available at `now` ------------------------------------------------
+
+    def _closed(self, df, minutes: int):
+        """Rows whose interval has finished by `now`, most recent last."""
+        cutoff = self.now - timedelta(minutes=minutes)
+        idx = df.index.searchsorted(cutoff, side="right")
+        return df.iloc[max(0, idx - self._limit):idx]
+
+    def last_close(self, pair: str):
+        """Close of the most recent closed 15-minute bar, or None. Used to mark holdings."""
+        df = self._m15.get(pair)
+        if df is None:
+            return None
+        rows = self._closed(df, 15)
+        return float(rows["close"].iloc[-1]) if len(rows) else None
+
+    def _trailing_eur_volume(self, pair: str) -> float:
+        rows = self._closed(self._m15[pair], 15).tail(96)
+        return float((rows["volume"] * rows["close"]).sum()) if len(rows) else 0.0
+
+    # -- the feed interface the engine uses -------------------------------------
+
+    async def universe(self):
+        day = self.now.date()
+        if day != self._universe_day:
+            ranked = []
+            for pair in self._m15:
+                if len(self._closed(self._m15[pair], 15).tail(96)) < 96:
+                    continue
+                vol = self._trailing_eur_volume(pair)
+                if vol >= self._min_vol:
+                    ranked.append((vol, pair))
+            ranked.sort(reverse=True)
+            self._universe = {p: self.all_pairs[p] for _, p in ranked[:self._max_pairs]}
+            self._universe_day = day
+        return dict(self._universe), {}, {}
+
+    async def quotes(self, altnames):
+        quotes, rejected = {}, {}
+        for pair in altnames:
+            df = self._m15.get(pair)
+            if df is None:
+                rejected[pair] = "no archive for this pair"
+                continue
+            open_at = self.now - CANDLE
+            if open_at not in df.index:
+                rejected[pair] = "no trades in this 15-minute interval"
+                continue
+            c = df.loc[open_at]
+            # Plan M4: costs apply to buys only. A buy pays half the spread and slippage on
+            # the ask. A sell or exit is priced at the candle price itself, with no spread.
+            # That is optimistic for exits, and it is recorded as a limitation.
+            bid = lambda p: p                          # noqa: E731
+            ask = lambda p: p * (1 + self._hb)         # noqa: E731
+            o, lo, hi, cl = _dec(c.open), _dec(c.low), _dec(c.high), _dec(c.close)
+            path = ((bid(o), ask(o)), (bid(lo), ask(lo)), (bid(hi), ask(hi)))
+            quotes[pair] = Quote(
+                pair=pair, bid=bid(cl), ask=ask(cl), last=cl,
+                volume_24h=_dec(self._trailing_eur_volume(pair) / max(float(cl), 1e-12)),
+                fetched_at=self.now, path=path, open_bid=bid(o), open_ask=ask(o))
+        return quotes, rejected
+
+    async def candles(self, altname: str, minutes: int) -> pd.DataFrame:
+        if minutes == 15:
+            df = self._closed(self._m15[altname], 15) if altname in self._m15 else None
+        else:
+            df = self._closed(self._h4[altname], 240) if altname in self._h4 else None
+        if df is None:
+            return pd.DataFrame(columns=OHLCV_COLUMNS, index=pd.DatetimeIndex([], tz="UTC"))
+        return df.copy()
+
+    async def depth(self, altname: str, count: int = 20) -> OrderBook:
+        return OrderBook(altname, (), (), self.now)     # no historical book: shadow gate reports no data
+
+    async def fear_greed(self):
+        return None                                     # no historical index: shadow gate reports no data
+
+    async def close(self) -> None:
+        return None
+
+    def fingerprint(self) -> str:
+        """SHA-256 of every bar this feed serves, in pair order. Identifies the data."""
+        h = hashlib.sha256()
+        for pair in sorted(self._m15):
+            h.update(pair.encode())
+            h.update(self._m15[pair].to_csv().encode())
+        return h.hexdigest()
+
+
+OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]

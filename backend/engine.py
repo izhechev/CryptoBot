@@ -373,9 +373,11 @@ class Engine:
         now = self._clock()
         self._log_quotes(now, wanted, quotes, rejected)
 
-        await self._run_exits(now, held, quotes)
-        await self._run_resting(now, orders, quotes)
+        # Armed entries first: a position bought at this step's open is then checked
+        # against this step's range, as it would be on the candle it was bought in.
         await self._run_armed(now, quotes)
+        await self._run_resting(now, orders, quotes)
+        await self._run_exits(now, held, quotes)
         if scan_due:
             await self._entry_scan(now, quotes, held)
             self._last_scan = now
@@ -409,22 +411,23 @@ class Engine:
                 self.ledger.log_event("position_priced_again", {"pair": pair, "at": now.isoformat()})
             entry = Decimal(meta["entry_price"])
             entry_at = datetime.fromisoformat(meta["entry_at"])
-            reason = R.exit_reason(entry, q.bid, entry_at, now, meta["tp_pct"], meta["sl_pct"],
-                                   meta["max_hold_hours"])
-            if reason is None:
+            decision = R.exit_decision(entry, q.points(), q.open_point()[0], entry_at, now,
+                                       meta["tp_pct"], meta["sl_pct"], meta["max_hold_hours"])
+            if decision is None:
                 self._decide(now, pair, meta["strategy"], [Verdict(
                     "exit", R.PASS, False, f"hold: bid {q.bid} vs entry {entry}")])
                 continue
+            reason, fill_price = decision
             rules_ = self._rules(pair)
             if rules_ is None:
                 self._decide(now, pair, meta["strategy"], [Verdict(
                     "exit", R.FAIL, False, f"{reason} exit blocked: no pair rules loaded")])
                 continue
             try:
-                self.ledger.market_sell(rules_, line.qty, q.bid,
+                self.ledger.market_sell(rules_, line.qty, fill_price,
                                         hook=lambda c, oid, fid: record_exit(c, pair))
                 self._decide(now, pair, meta["strategy"], [Verdict(
-                    "exit", R.PASS, False, f"{reason} exit: sold {line.qty} at bid {q.bid}")])
+                    "exit", R.PASS, False, f"{reason} exit: sold {line.qty} at {fill_price}")])
             except LedgerError as e:
                 self._decide(now, pair, meta["strategy"], [Verdict(
                     "exit", R.FAIL, False, f"{reason} exit refused by ledger: {e}")])
@@ -453,7 +456,8 @@ class Engine:
                 self._decide(now, pair, strategy, [Verdict("limit", R.NODATA, False, f"{why}: no action")])
                 continue
             limit = Decimal(o["limit_price"])
-            if not R.limit_buy_fills(limit, q.ask):
+            # Any point of the step (open, low, high, in order) whose ask reached the limit.
+            if not any(R.limit_buy_fills(limit, ask) for _bid, ask in q.points()):
                 self._decide(now, pair, strategy, [Verdict(
                     "limit", R.FAIL, False, f"ask {q.ask} has not reached limit {limit}")])
                 continue
@@ -498,10 +502,11 @@ class Engine:
                 continue
             notional = Decimal(str(self.ls.default_order_eur))
             try:
-                self.ledger.market_buy(rules_, notional, q.ask, hook=lambda c, oid, fid: record_armed_fill(
-                    c, r["id"], pair, strategy, q.ask, now, r["tp_pct"], r["sl_pct"], r["max_hold_hours"]))
+                fill_ask = q.open_point()[1]          # buys fill at the ask of the step's open
+                self.ledger.market_buy(rules_, notional, fill_ask, hook=lambda c, oid, fid: record_armed_fill(
+                    c, r["id"], pair, strategy, fill_ask, now, r["tp_pct"], r["sl_pct"], r["max_hold_hours"]))
                 self._decide(now, pair, strategy, [Verdict("ledger", R.PASS, True,
-                                                           f"market buy {notional} EUR at ask {q.ask}")])
+                                                           f"market buy {notional} EUR at ask {fill_ask}")])
             except LedgerError as e:
                 self._set_pending(r["id"], "dropped")
                 self._decide(now, pair, strategy, [Verdict("ledger", R.FAIL, True, str(e))])

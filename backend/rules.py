@@ -154,17 +154,37 @@ def fear_greed_shadow(reading: Optional[tuple]) -> Verdict:
 
 # ----------------------------------------------------------------- exits and fills
 
+def exit_decision(entry_price: Decimal, points, open_bid: Decimal, entry_at: datetime,
+                  now: datetime, tp_pct: float, sl_pct: float, max_hold_hours: float):
+    """The exit rule, shared by forward trading and history.
+
+    `points` are the (bid, ask) points of the step, in order: open, low, high. A live
+    quote is one point, so the same code gives the live answer.
+
+    * Stop: fills at the stop level, or at the open if the open already gapped through it.
+    * Target: fills at the target level, or at the open if the open gapped above it.
+    * At each point the stop is checked before the target. Within one candle, the low
+      comes before the high, so a stop and a target in the same candle resolve to the stop.
+    * Timeout: a time limit on timestamps, filled at the open bid.
+
+    Returns (reason, fill_price) or None."""
+    stop_level = entry_price * (Decimal(1) - Decimal(str(sl_pct)) / 100)
+    target_level = entry_price * (Decimal(1) + Decimal(str(tp_pct)) / 100)
+    for bid, _ask in points:
+        if bid <= stop_level:
+            return "stop", min(open_bid, stop_level)
+        if bid >= target_level:
+            return "target", max(open_bid, target_level)
+    if now - entry_at >= timedelta(hours=max_hold_hours):
+        return "timeout", open_bid
+    return None
+
+
 def exit_reason(entry_price: Decimal, bid: Decimal, entry_at: datetime, now: datetime,
                 tp_pct: float, sl_pct: float, max_hold_hours: float) -> Optional[str]:
-    """Decided on the bid. Stop is checked before target, so a single price that is
-    both cannot be read as a win."""
-    if bid <= entry_price * (Decimal(1) - Decimal(str(sl_pct)) / 100):
-        return "stop"
-    if bid >= entry_price * (Decimal(1) + Decimal(str(tp_pct)) / 100):
-        return "target"
-    if now - entry_at >= timedelta(hours=max_hold_hours):
-        return "timeout"
-    return None
+    """Reason only, for a single live bid. Kept for callers that need no price."""
+    decision = exit_decision(entry_price, ((bid, bid),), bid, entry_at, now, tp_pct, sl_pct, max_hold_hours)
+    return decision[0] if decision else None
 
 
 def limit_buy_fills(limit: Decimal, ask: Decimal) -> bool:
