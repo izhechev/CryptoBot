@@ -411,3 +411,58 @@ def load_venue_settings(yaml_path: str = "backend/config.yaml") -> VenueSettings
         fee_tiers=tiers,
         max_empty_share=float(universe["max_empty_share"]),
     )
+
+
+# ---------------------------------------------------------------------------
+# Paper ledger settings (M2). Every value is required and validated. Zero or a
+# negative value is refused, so a missing limit can never mean "unlimited".
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class LedgerSettings:
+    name: str
+    starting_eur: float
+    reserve_eur: float
+    default_order_eur: float
+    max_position_eur: float
+    max_open_positions: int
+    max_total_exposure_eur: float
+
+    def __post_init__(self):
+        for field_name in ("starting_eur", "reserve_eur", "default_order_eur",
+                           "max_position_eur", "max_total_exposure_eur"):
+            if not getattr(self, field_name) > 0:
+                raise ValueError(f"ledger.{field_name} must be > 0, got {getattr(self, field_name)}")
+        if self.max_open_positions < 1:
+            raise ValueError(f"ledger.max_open_positions must be >= 1, got {self.max_open_positions}")
+        if self.reserve_eur >= self.starting_eur:
+            raise ValueError("ledger.reserve_eur must be below ledger.starting_eur")
+        if self.default_order_eur > self.max_position_eur:
+            raise ValueError("ledger.default_order_eur cannot exceed ledger.max_position_eur")
+        if self.max_position_eur > self.max_total_exposure_eur:
+            raise ValueError("ledger.max_position_eur cannot exceed ledger.max_total_exposure_eur")
+        deployable = self.starting_eur - self.reserve_eur
+        if self.max_total_exposure_eur > deployable:
+            raise ValueError(f"ledger.max_total_exposure_eur {self.max_total_exposure_eur} exceeds "
+                             f"the deployable cash {deployable} (starting minus reserve)")
+
+
+def load_ledger_settings(yaml_path: str = "backend/config.yaml") -> LedgerSettings:
+    with open(yaml_path) as f:
+        raw = yaml.safe_load(f)
+    if "ledger" not in raw:
+        raise ValueError("config has no ledger block")
+    block = raw["ledger"]
+    required = ("name", "starting_eur", "reserve_eur", "default_order_eur",
+                "max_position_eur", "max_open_positions", "max_total_exposure_eur")
+    missing = [k for k in required if k not in block]
+    if missing:
+        raise ValueError(f"ledger block is missing required keys: {', '.join(missing)}")
+    return LedgerSettings(
+        name=str(block["name"]),
+        starting_eur=float(block["starting_eur"]),
+        reserve_eur=float(block["reserve_eur"]),
+        default_order_eur=float(block["default_order_eur"]),
+        max_position_eur=float(block["max_position_eur"]),
+        max_open_positions=int(block["max_open_positions"]),
+        max_total_exposure_eur=float(block["max_total_exposure_eur"]),
+    )
