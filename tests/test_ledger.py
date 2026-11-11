@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from backend.config import LedgerSettings, load_ledger_settings, load_venue_settings
-from backend.costs import FeeSchedule
+from backend.costs import FeeSchedule, FeeTier
 from backend.kraken_public import PairRules
 from backend.ledger import Ledger, LedgerError
 from backend.storage import Storage
@@ -550,3 +550,135 @@ def test_old_bot_tables_still_work_after_the_ledger_is_created(tmp_path):
     L.market_buy(XBT, "10", "100")
     L.close()
     assert Storage(db).get_open_positions() == []
+
+
+# ------------------------------------------------------------ regression: per-pair cap with resting buys
+# M2 review finding 1: resting buys were not counted toward the per-pair cap, so
+# three €10 XBTEUR limit buys were all accepted under max_position_eur=20.
+
+def test_repeated_resting_buys_cannot_exceed_the_pair_cap():
+    L = _ledger()
+    L.place_limit(XBT, "buy", "0.1", "100")        # pending 10
+    L.place_limit(XBT, "buy", "0.1", "100")        # pending 10 + 10 = 20, allowed
+    before = L.snapshot_state()
+    with pytest.raises(LedgerError, match="position-size limit"):
+        L.place_limit(XBT, "buy", "0.1", "100")    # 30 > 20
+    assert L.snapshot_state() == before
+    assert L.check_invariants() == []
+    L.close()
+
+
+def test_held_cost_and_resting_buys_are_counted_together():
+    L = _ledger()
+    L.market_buy(XBT, "10", "100")                 # held 10
+    L.place_limit(XBT, "buy", "0.1", "100")        # held 10 + pending 10 = 20, allowed
+    before = L.snapshot_state()
+    with pytest.raises(LedgerError, match="position-size limit"):
+        L.place_limit(XBT, "buy", "0.1", "100")    # 10 + 10 + 10 > 20
+    assert L.snapshot_state() == before
+    L.close()
+
+
+def test_market_buy_respects_resting_buys_on_the_same_pair():
+    L = _ledger()
+    L.place_limit(XBT, "buy", "0.1", "100")        # pending 10
+    before = L.snapshot_state()
+    with pytest.raises(LedgerError, match="position-size limit"):
+        L.market_buy(XBT, "15", "100")             # 10 + 15 > 20
+    assert L.snapshot_state() == before
+    L.close()
+
+
+def test_filling_a_reserved_order_does_not_count_it_twice():
+    # Without excluding the order's own reservation, the first fill below would be
+    # refused: 0 held + 20 pending (both orders) + 10 for the fill = 30 > 20.
+    L = _ledger()
+    a = L.place_limit(XBT, "buy", "0.1", "100")
+    b = L.place_limit(XBT, "buy", "0.1", "100")
+    L.fill_limit(a, "100")                         # held 10 + other pending 10 + 10 = 20, allowed
+    assert L.report().holdings[0].cost == Decimal("10")
+    L.fill_limit(b, "100")                         # held 10 + 10 = 20, allowed
+    assert L.report().holdings[0].cost == Decimal("20")
+    assert L.check_invariants() == []
+    L.close()
+
+
+def test_fill_with_another_pending_order_still_respects_the_cap():
+    L = _ledger()
+    a = L.place_limit(XBT, "buy", "0.1", "100")
+    L.place_limit(XBT, "buy", "0.1", "100")        # pending b
+    L.fill_limit(a, "100")                         # held 10, pending b 10
+    before = L.snapshot_state()
+    with pytest.raises(LedgerError, match="position-size limit"):
+        L.place_limit(XBT, "buy", "0.1", "100")    # 10 + 10 + 10 > 20
+    assert L.snapshot_state() == before
+    L.close()
+
+
+def test_invariant_check_detects_pending_buys_over_the_cap():
+    """A database written before the fix: two open buys totalling 30.12 on one pair.
+    Cash is set consistently, so the only violation is the pair cap."""
+    L = _ledger()
+    with L._tx() as c:
+        for price in ("100", "101"):
+            c.execute("INSERT INTO orders (account_id, pair, side, kind, status, volume, limit_price, "
+                      "reserved_eur, reserved_fee_eur, reserved_qty, created_at) "
+                      "VALUES (1, 'XBTEUR', 'buy', 'limit', 'open', '0.1', ?, '15', '0.06', '0', "
+                      "'2026-11-11T10:00:00')", (price,))
+        c.execute("UPDATE accounts SET cash_free = '469.88', cash_reserved = '30.12' WHERE id = 1")
+    problems = L.check_invariants()
+    assert len(problems) == 1
+    assert "XBTEUR" in problems[0] and "above position limit" in problems[0]
+    L.close()
+
+
+# ------------------------------------------------------------ regression: fee schedule frozen per account
+# M2 review finding 2: the frozen settings omitted the fee schedule, so a reopened
+# account accepted a different schedule and charged the new rate.
+
+def _other_fees() -> FeeSchedule:
+    return FeeSchedule([FeeTier(Decimal(0), Decimal("0.0025"), Decimal("0.0050"))])
+
+
+def test_reopening_with_a_different_fee_schedule_is_refused(tmp_path):
+    db = str(tmp_path / "fees.db")
+    _ledger(path=db).close()
+    with pytest.raises(LedgerError, match="different settings"):
+        Ledger(db, _settings(), _other_fees())
+
+
+def test_a_refused_fee_change_charges_nothing_and_the_stored_rate_still_applies(tmp_path):
+    db = str(tmp_path / "fees.db")
+    _ledger(path=db).close()
+    with pytest.raises(LedgerError):
+        Ledger(db, _settings(), _other_fees())
+    L = Ledger(db, _settings(), _fees())           # the original schedule still opens it
+    L.market_buy(XBT, "10", "100")
+    assert L.report().fees_paid == Decimal("0.08")  # the frozen 0.80% taker, not 0.50%
+    L.close()
+
+
+def test_a_change_in_the_volume_that_selects_the_tier_is_refused(tmp_path):
+    db = str(tmp_path / "fees.db")
+    _ledger(path=db).close()
+    tiered = FeeSchedule(list(_fees().tiers) + [FeeTier(Decimal(2500), Decimal("0.0025"), Decimal("0.0050"))],
+                         volume_30d_eur=Decimal(3000))
+    with pytest.raises(LedgerError, match="different settings"):
+        Ledger(db, _settings(), tiered)
+
+
+def test_the_same_fee_schedule_reopens_normally(tmp_path):
+    db = str(tmp_path / "fees.db")
+    _ledger(path=db).close()
+    L = Ledger(db, _settings(), _fees())
+    assert L.check_invariants() == []
+    L.close()
+
+
+def test_report_shows_the_fee_rates_the_account_was_frozen_with(tmp_path):
+    db = str(tmp_path / "fees.db")
+    _ledger(path=db).close()
+    L = Ledger(db, _settings(), _fees(), readonly=True)
+    r = L.report()
+    assert r.fee_maker == Decimal("0.004") and r.fee_taker == Decimal("0.008")
+    L.close()

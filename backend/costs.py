@@ -40,6 +40,14 @@ class FeeSchedule:
         )
 
     @property
+    def tiers(self) -> tuple:
+        return tuple(self._tiers)
+
+    @property
+    def volume_30d_eur(self) -> Decimal:
+        return self._volume
+
+    @property
     def tier(self) -> FeeTier:
         chosen = self._tiers[0]
         for t in self._tiers:

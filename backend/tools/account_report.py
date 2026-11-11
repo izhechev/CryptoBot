@@ -56,6 +56,7 @@ def render(rep: AccountReport, db_path: str) -> str:
         f"  Cash, reserved for buys    {_euro(rep.reserved_eur)}",
         f"  Holdings at cost           {_euro(rep.holdings_cost)}",
         f"  Holdings at mark           {_euro(rep.holdings_value)}",
+        f"  Fee rates (frozen)         maker {rep.fee_maker}  taker {rep.fee_taker}",
         f"  Fees paid                  {_euro(rep.fees_paid)}",
         f"  Realised before fees       {_euro(rep.realised_before_fees)}",
         f"  Unrealised                 {_euro(rep.unrealised)}",
