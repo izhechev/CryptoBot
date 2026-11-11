@@ -105,31 +105,55 @@ def period_window(bt: BacktestSettings, period: str) -> tuple[datetime, datetime
     return bt.periods[period]
 
 
-def load_source(source: Path, pairs, start: datetime, end: datetime) -> dict:
-    """Validate the archive and load the requested pairs for the window. Raises SourceError
-    for anything that cannot give data: a missing path, no pairs, or no bars in the window."""
-    source = Path(source)
-    if not source.exists():
-        raise SourceError(f"no such file or folder: {source}")
-    available = list_pairs(source)
+def _as_list(source) -> list[Path]:
+    return [Path(x) for x in source] if isinstance(source, (list, tuple)) else [Path(source)]
+
+
+def load_source(source, pairs, start: datetime, end: datetime, quote: Optional[str] = None) -> dict:
+    """Validate the archive(s) and load the requested pairs for the window.
+
+    `source` is one path or a list (for example the Q1 and Q2 archives). Raises SourceError
+    for anything that cannot give data: a missing path, no pairs, or no bars in the window.
+    With no `pairs`, every 15-minute pair of the given quote currency in any archive is loaded."""
+    sources = _as_list(source)
+    for src in sources:
+        if not src.exists():
+            raise SourceError(f"no such file or folder: {src}")
+    available = sorted({p for src in sources for p in list_pairs(src, quote)})
     if not available:
-        raise SourceError("the archive lists no pairs")
+        raise SourceError("the archive lists no pairs" + (f" quoted in {quote}" if quote else ""))
     wanted = list(pairs) if pairs else available
     unknown = [p for p in wanted if p not in available]
     if unknown:
         raise SourceError(f"pairs not in the archive: {', '.join(unknown)}")
-    frames = load_frames(source, wanted, start, end)
+    frames = load_frames(sources, wanted, start, end)
     if not frames:
         raise SourceError(f"no bars in {start.date()} to {end.date()} for the requested pairs")
     return frames
 
 
-def load_frames(source: Path, pairs: list[str], start: datetime, end: datetime) -> dict:
+def _load_raw(sources: list[Path], pair: str) -> pd.DataFrame:
+    """One pair from every archive that has it, joined by time. A bar present in two
+    archives is kept once."""
+    parts = []
+    for src in sources:
+        try:
+            parts.append(load_pair(src, pair))
+        except FileNotFoundError:
+            continue
+    if not parts:
+        raise FileNotFoundError(f"no data for {pair} in any archive")
+    raw = pd.concat(parts)
+    return raw[~raw.index.duplicated(keep="last")].sort_index()
+
+
+def load_frames(source, pairs: list[str], start: datetime, end: datetime) -> dict:
     """Present 15-minute bars for each pair in [start, end). Empty intervals are absent."""
+    sources = _as_list(source)
     frames = {}
     s, e = pd.Timestamp(start), pd.Timestamp(end)
     for pair in pairs:
-        raw = load_pair(source, pair)
+        raw = _load_raw(sources, pair)
         grid = rebuild_grid(raw, s, e)
         present = grid[grid["present"]][["open", "high", "low", "close", "volume"]]
         if len(present):
@@ -284,8 +308,9 @@ def persist_run(out_dir: Path, runs_path: Path, record: dict, curve: list[dict])
 
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Run the v1 engine on recorded 15-minute history.")
-    ap.add_argument("--source", type=Path, required=True,
-                    help="Kraken OHLCVT archive: a .zip, a directory of CSVs, or one CSV")
+    ap.add_argument("--source", type=Path, nargs="+", required=True,
+                    help="Kraken OHLCVT archive(s): .zip files, directories of CSVs, or CSVs. "
+                         "Give several (for example Q1 and Q2) to join them by time")
     ap.add_argument("--period", required=True, choices=["train", "validation", "holdout"])
     ap.add_argument("--final", action="store_true", help="required to read the holdout")
     ap.add_argument("--pairs", nargs="*", default=None, help="pairs to load (default: all in the archive)")
@@ -309,7 +334,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     bt = load_backtest_settings(args.config)
     start, end = period_window(bt, args.period)
     try:
-        frames = load_source(args.source, args.pairs, start, end)
+        frames = load_source(args.source, args.pairs, start, end, quote=venue.quote_currency)
     except (SourceError, OSError, ValueError, KeyError, zipfile.BadZipFile) as e:
         # Nothing has been read from the holdout yet, so a failed load does not use it up.
         print(f"error: cannot load the data from {args.source}: {e}", file=sys.stderr)
@@ -323,7 +348,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     out.mkdir(parents=True, exist_ok=True)
     result = asyncio.run(run_window(frames, cfg, venue, ls, eng, bt, args.config, start, end, db_path))
     run_id = make_run_id(label, start, end, result["settings_hash"], result["fingerprint"])
-    record = build_record(run_id, label, args.period, start, end, result, args.source.name,
+    record = build_record(run_id, label, args.period, start, end, result,
+                          ",".join(p.name for p in args.source),
                           args.config, ls.starting_eur, now)
     persist_run(out, args.runs, record, result["curve"])
     if db_path.exists():

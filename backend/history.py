@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import re
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -199,10 +200,18 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-def list_pairs(source: Path) -> list[str]:
-    """Pair names the archive holds, from file or member names. Accepts <PAIR>.csv and <PAIR>_15.csv."""
+_INTERVAL_SUFFIX = re.compile(r"^(.+)_(\d+)$")
+
+
+def list_pairs(source: Path, quote: Optional[str] = None) -> list[str]:
+    """Pairs the archive holds as 15-minute series, from file or member names.
+
+    Kraken's quarterly archives hold seven intervals per pair (<PAIR>_1, _5, _15, _60,
+    _240, _720, _1440). Only the 15-minute members are pairs here; a member for any other
+    interval is ignored. A name with no interval suffix (<PAIR>.csv) is accepted as a
+    single-interval file. `quote`, if given, keeps only pairs ending in it (for example EUR).
+    Non-CSV members (MANIFEST.json, README.md) are ignored."""
     source = Path(source)
-    names: list[str] = []
     if source.is_dir():
         names = [f.stem for f in source.glob("*.csv")]
     elif source.suffix.lower() == ".zip":
@@ -213,7 +222,12 @@ def list_pairs(source: Path) -> list[str]:
     pairs = set()
     for stem in names:
         s = stem.upper()
-        if s.endswith(f"_{CANDLE_MINUTES}"):
-            s = s[: -len(f"_{CANDLE_MINUTES}")]
+        m = _INTERVAL_SUFFIX.match(s)
+        if m:
+            if int(m.group(2)) != CANDLE_MINUTES:
+                continue
+            s = m.group(1)
         pairs.add(s)
+    if quote:
+        pairs = {p for p in pairs if p.endswith(quote.upper())}
     return sorted(pairs)
