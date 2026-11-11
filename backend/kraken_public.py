@@ -61,6 +61,20 @@ class Quote:
     last: Decimal
     volume_24h: Decimal       # base units
     fetched_at: datetime      # UTC, local clock when the response was received
+    # Historical steps only. `path` is the (bid, ask) points visited inside the step,
+    # in order: open, then low, then high. Stops are checked before targets at each point.
+    # Live quotes leave these empty and are a single point.
+    path: tuple = ()
+    open_bid: Optional[Decimal] = None
+    open_ask: Optional[Decimal] = None
+
+    def points(self) -> tuple:
+        return self.path or ((self.bid, self.ask),)
+
+    def open_point(self) -> tuple:
+        if self.open_bid is not None and self.open_ask is not None:
+            return (self.open_bid, self.open_ask)
+        return self.points()[0]
 
     @property
     def mid(self) -> Decimal:

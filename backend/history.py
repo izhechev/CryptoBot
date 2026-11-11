@@ -197,3 +197,23 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def list_pairs(source: Path) -> list[str]:
+    """Pair names the archive holds, from file or member names. Accepts <PAIR>.csv and <PAIR>_15.csv."""
+    source = Path(source)
+    names: list[str] = []
+    if source.is_dir():
+        names = [f.stem for f in source.glob("*.csv")]
+    elif source.suffix.lower() == ".zip":
+        with zipfile.ZipFile(source) as zf:
+            names = [Path(n).stem for n in zf.namelist() if n.lower().endswith(".csv")]
+    else:
+        names = [source.stem]
+    pairs = set()
+    for stem in names:
+        s = stem.upper()
+        if s.endswith(f"_{CANDLE_MINUTES}"):
+            s = s[: -len(f"_{CANDLE_MINUTES}")]
+        pairs.add(s)
+    return sorted(pairs)
