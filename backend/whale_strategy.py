@@ -14,6 +14,7 @@ class WhaleSignal:
     as_of: str = ""            # opening timestamp of the signal candle
     setup: str = "spike"
     retest_price: Optional[float] = None
+    volume_ratio_all_intervals: Optional[float] = None
 
     @property
     def retest_limit(self) -> float:
@@ -24,12 +25,33 @@ _MIN_CANDLES = 20
 _QUARTER_HOUR = pd.Timedelta(minutes=15)
 
 
-def detect_breakout(df: pd.DataFrame, cfg: Config, *, as_of: datetime) -> Optional[WhaleSignal]:
-    """Check the last completed 15-minute candle against the preceding 24 clock hours.
+@dataclass(frozen=True)
+class BreakoutEvidence:
+    candle_open: pd.Timestamp
+    prior_high: float
+    close: float
+    volume: float
+    active_volume_ratio: float
+    all_volume_ratio: float
 
-    Some venues omit zero-trade intervals. Count only traded intervals in the
-    baseline volume, equally for sparse and explicitly zero-filled histories.
-    """
+    def confirmed(self, cfg: Config) -> bool:
+        return (self.active_volume_ratio >= cfg.whale_volume_multiple
+                and self.close * self.volume >= cfg.whale_min_candle_volume_usd)
+
+    def as_signal(self) -> WhaleSignal:
+        return WhaleSignal(
+            volume_ratio=round(self.active_volume_ratio, 2),
+            volume_ratio_all_intervals=round(self.all_volume_ratio, 2),
+            price_thrust_pct=round((self.close / self.prior_high - 1) * 100, 2),
+            thrust_close=self.close,
+            as_of=str(self.candle_open),
+            setup="breakout",
+            retest_price=self.prior_high,
+        )
+
+
+def measure_breakout(df: pd.DataFrame, cfg: Config, *, as_of: datetime) -> Optional[BreakoutEvidence]:
+    """Compare the last fully closed bar to the 96 preceding UTC quarter-hours."""
     if df is None or cfg.candle_timeframe != "15m" or not isinstance(df.index, pd.DatetimeIndex):
         return None
     index = df.index
@@ -52,8 +74,9 @@ def detect_breakout(df: pd.DataFrame, cfg: Config, *, as_of: datetime) -> Option
     active = volume[:-1] > 0
     if active.sum() < _MIN_CANDLES:
         return None
-    ratio = volume[-1] / volume[:-1][active].mean()
-    if ratio < cfg.whale_volume_multiple:
+    active_ratio = float(volume[-1] / volume[:-1][active].mean())
+    all_ratio = active_ratio * (96 / int(active.sum()))
+    if all_ratio < cfg.whale_volume_multiple:
         return None
     traded = window.loc[volume > 0, ["open", "high", "low", "close"]].astype(float)
     prices = traded.to_numpy()
@@ -61,16 +84,15 @@ def detect_breakout(df: pd.DataFrame, cfg: Config, *, as_of: datetime) -> Option
         return None
     prior_high = float(traded["high"].iloc[:-1].max())
     close = float(traded["close"].iloc[-1])
-    if close <= prior_high or close * volume[-1] < cfg.whale_min_candle_volume_usd:
+    if close <= prior_high:
         return None
-    return WhaleSignal(
-        volume_ratio=round(float(ratio), 2),
-        price_thrust_pct=round((close / prior_high - 1) * 100, 2),
-        thrust_close=close,
-        as_of=str(candle_open),
-        setup="breakout",
-        retest_price=prior_high,
-    )
+    return BreakoutEvidence(candle_open, prior_high, close, float(volume[-1]), active_ratio, all_ratio)
+
+
+def detect_breakout(df: pd.DataFrame, cfg: Config, *, as_of: datetime) -> Optional[WhaleSignal]:
+    """The entry strategy requires elevated volume among active intervals and sufficient turnover."""
+    evidence = measure_breakout(df, cfg, as_of=as_of)
+    return evidence.as_signal() if evidence is not None and evidence.confirmed(cfg) else None
 
 
 def _spike_at(df: pd.DataFrame, k: int, cfg: Config) -> Optional[tuple[float, float]]:
