@@ -252,14 +252,16 @@ def simulate_coin(cfg: Config, symbol: str, df: pd.DataFrame,
         candidates: list[tuple[str, int, float]] = []
         if (strategies in ("both", "whale") and i >= busy_until["whale"]
                 and (bullish or cfg.whale_bypass_regime)):
-            sig = detect_whale(window, cfg)
+            signal_time = ts + pd.Timedelta(minutes=15)
+            sig = detect_whale(window, cfg, as_of=signal_time)
             if sig is not None:
                 if cfg.whale_entry_mode == "retest":
-                    # Limit order at the spike candle's close: trade only if price
-                    # pulls back to it within the wait window (better entry, fewer fills).
-                    limit = sig.thrust_close
+                    limit = sig.retest_limit
+                    expires = signal_time + pd.Timedelta(minutes=15 * cfg.whale_retest_wait_candles)
                     fill = None
                     for j in range(i + 1, min(i + 1 + cfg.whale_retest_wait_candles, len(df))):
+                        if df.index[j] >= expires:
+                            break
                         if float(df["low"].iloc[j]) <= limit:
                             fill = j
                             break
@@ -267,7 +269,7 @@ def simulate_coin(cfg: Config, symbol: str, df: pd.DataFrame,
                         candidates.append(("whale-limit", fill, limit))
                     else:
                         # never filled — don't keep re-arming on the same spike
-                        busy_until["whale"] = i + cfg.whale_retest_wait_candles
+                        busy_until["whale"] = int(df.index.searchsorted(expires, side="left")) - 1
                 else:
                     candidates.append(("whale", i + 1, float(df["open"].iloc[i + 1])))
         if (strategies in ("both", "spot") and i >= busy_until["standard"]

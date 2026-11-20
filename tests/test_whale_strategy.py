@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import pytest
-from backend.whale_strategy import detect_whale, WhaleSignal
+from backend.whale_strategy import detect_breakout, detect_whale, WhaleSignal
 
 
 def base_df(n: int = 60, price: float = 100.0, vol: float = 1_000_000.0) -> pd.DataFrame:
@@ -104,3 +104,90 @@ def test_skips_multicandle_blowoff_thrust(cfg):
     df.loc[df.index[-5]:, "close"] = [100.0, 106.0, 113.0, 121.0, 121.5]  # +21%
     df.loc[df.index[-2], "volume"] = 1_000_000.0 * 6
     assert detect_whale(df, cfg) is None
+
+
+def breakout_frame():
+    bars = base_df(n=98, price=100, vol=1000).astype(float)
+    bars.index = pd.date_range("2026-08-01", periods=len(bars), freq="15min", tz="UTC")
+    bars.iloc[-1] = [100, 125, 100, 120, 3000]
+    return bars, bars.index[-1] + pd.Timedelta(minutes=15)
+
+
+@pytest.mark.parametrize("tz", ["UTC", "Europe/Vienna", None])
+def test_breakout_retests_prior_high_on_last_closed_candle(cfg, tz):
+    bars, when = breakout_frame()
+    bars.iloc[0, bars.columns.get_loc("high")] = 200  # outside preceding 24h
+    bars.loc[when] = [120, 200, 110, 199, 99999]  # still open at decision time
+    bars.index = bars.index.tz_convert(tz)
+    signal = detect_breakout(bars, cfg, as_of=when + pd.Timedelta(minutes=4))
+    assert signal.setup == "breakout"
+    assert signal.thrust_close == 120
+    assert signal.retest_limit == 101
+    assert signal.volume_ratio == 3
+    assert pd.Timestamp(signal.as_of) == when - pd.Timedelta(minutes=15)
+    assert signal.price_thrust_pct == pytest.approx(18.81)
+
+
+def test_breakout_requires_fresh_close_and_day_of_history(cfg):
+    bars, when = breakout_frame()
+    assert detect_breakout(bars.iloc[:-1], cfg, as_of=when) is None
+    assert detect_breakout(bars.iloc[2:], cfg, as_of=when) is None
+    assert detect_breakout(bars.iloc[[0, *range(80, 98)]], cfg, as_of=when) is None
+
+
+@pytest.mark.parametrize("kind", ["absent", "zero"])
+def test_breakout_volume_uses_active_intervals_only(cfg, kind):
+    bars, when = breakout_frame()
+    quiet = bars.index[1:60]
+    if kind == "absent":
+        bars = bars.drop(quiet)
+    else:
+        bars.loc[quiet, "volume"] = 0
+    assert detect_breakout(bars, cfg, as_of=when).volume_ratio == 3
+    bars.iloc[-1, bars.columns.get_loc("volume")] = 2999
+    assert detect_breakout(bars, cfg, as_of=when) is None
+
+
+def test_breakout_rejects_touch_only_and_small_turnover(cfg):
+    bars, when = breakout_frame()
+    bars.loc[bars.index[-1], "close"] = 101
+    assert detect_breakout(bars, cfg, as_of=when) is None
+    bars.loc[bars.index[-1], "close"] = 120
+    bars["volume"] /= 100
+    assert detect_breakout(bars, cfg, as_of=when) is None
+
+
+def test_breakout_rejects_bad_intervals_and_nonfinite_inputs(cfg):
+    bars, when = breakout_frame()
+    assert detect_breakout(pd.concat([bars.iloc[:1], bars]), cfg, as_of=when) is None
+    sparse = bars.rename(index={bars.index[50]: bars.index[50] + pd.Timedelta(minutes=1)})
+    assert detect_breakout(sparse, cfg, as_of=when) is None
+    for field in ["volume", "high", "close"]:
+        invalid = bars.copy()
+        invalid.loc[invalid.index[-1], field] = np.inf
+        assert detect_breakout(invalid, cfg, as_of=when) is None
+    cfg.candle_timeframe = "1h"
+    assert detect_breakout(bars, cfg, as_of=when) is None
+
+
+def test_extended_breakout_only_arms_enabled_retest(cfg):
+    bars, when = breakout_frame()
+    cfg.whale_entry_mode = "retest"
+    cfg.whale_breakout_retest = True
+    assert detect_whale(bars, cfg, as_of=when).retest_limit == 101
+    cfg.whale_entry_mode = "chase"
+    assert detect_whale(bars, cfg, as_of=when) is None
+    cfg.whale_entry_mode = "retest"
+    cfg.whale_breakout_retest = False
+    assert detect_whale(bars, cfg, as_of=when) is None
+
+
+def test_as_of_hides_future_spikes_from_fallback(cfg):
+    bars = confirmed_spike_df()
+    bars.index = pd.date_range("2026-08-01", periods=len(bars), freq="15min", tz="UTC")
+    cfg.whale_breakout_retest = True
+    cfg.whale_entry_mode = "retest"
+    assert detect_whale(bars, cfg, as_of=bars.index[-2]) is None
+    signal = detect_whale(bars, cfg, as_of=bars.index[-1] + pd.Timedelta(minutes=15))
+    assert signal.setup == "spike"
+    assert signal.retest_limit == signal.thrust_close

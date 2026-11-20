@@ -77,14 +77,14 @@ def regime_verdict(lane: str, bullish: bool, cfg: Config) -> Verdict:
 
 # ----------------------------------------------------------------- detectors
 
-def whale_detect(df15: pd.DataFrame, cfg: Config) -> tuple[Verdict, Optional[WhaleSignal]]:
+def whale_detect(df15: pd.DataFrame, cfg: Config, *, as_of=None) -> tuple[Verdict, Optional[WhaleSignal]]:
     """The whale detector already applies its quality filters (follow-through,
     blow-off, single-candle, EMA trend, liquidity floor). Its result is one gate."""
-    sig = detect_whale(df15, cfg)
+    sig = detect_whale(df15, cfg, as_of=as_of)
     if sig is None:
-        return Verdict("whale_detect", FAIL, True, "no confirmed spike with follow-through"), None
+        return Verdict("whale_detect", FAIL, True, "no qualifying entry signal"), None
     return (Verdict("whale_detect", PASS, True,
-                    f"spike vol {sig.volume_ratio}x thrust +{sig.price_thrust_pct}% at {sig.thrust_close}"),
+                    f"{sig.setup} vol {sig.volume_ratio}x move +{sig.price_thrust_pct}% at {sig.thrust_close}"),
             sig)
 
 

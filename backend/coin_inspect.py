@@ -105,7 +105,9 @@ async def inspect_coin(scanner, symbol: str, with_news: bool = False) -> CoinRep
 
     whale = detect_whale(df, cfg) if cfg.whale_enabled else None
     if whale is not None:
-        report.whale = {"volume_ratio": whale.volume_ratio,
+        report.whale = {"setup": whale.setup,
+                        "retest_limit": whale.retest_limit,
+                        "volume_ratio": whale.volume_ratio,
                         "thrust_pct": whale.price_thrust_pct,
                         "as_of": whale.as_of}
 
