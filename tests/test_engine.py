@@ -354,6 +354,36 @@ def test_a_refused_pair_is_logged_as_unpriced_not_guessed(tmp_path):
 
 # ------------------------------------------------------------ fills
 
+def test_breakout_places_limit_at_previous_high_and_obeys_regime(tmp_path):
+    clock, feed = Clock(), FakeFeed()
+    whale_world(feed, clock, ask=130.1, bid=130)
+    bars = flat_df(n=110, volume=1000)
+    bars.index = pd.date_range(end=clock() - timedelta(minutes=15), periods=110,
+                               freq="15min", tz="UTC")
+    bars["high"] = 101.0
+    bars.iloc[-1] = [100, 135, 99, 130, 5000]
+    feed.candle_data[("AAAEUR", 15)] = bars
+    eng, db = make_engine(tmp_path, clock, feed)
+    run(eng.cycle())
+    orders = eng.ledger.open_orders()
+    assert len(orders) == 1
+    assert Decimal(orders[0]["limit_price"]) == Decimal("101")
+    assert not db_rows(db, "SELECT 1 FROM fills")
+    assert any("breakout" in row[0] for row in db_rows(
+        db, "SELECT detail FROM decisions WHERE gate='whale_detect'"))
+    run(eng.close())
+
+    btc = feed.candle_data[("XBTEUR", 240)]
+    feed.candle_data[("XBTEUR", 240)] = btc.iloc[::-1].set_axis(btc.index)
+    sub = tmp_path / "bear"
+    sub.mkdir()
+    eng, db = make_engine(sub, clock, feed)
+    run(eng.cycle())
+    assert not eng.ledger.open_orders()
+    assert db_rows(db, "SELECT 1 FROM decisions WHERE gate='regime' AND verdict='fail'")
+    run(eng.close())
+
+
 def test_whale_retest_fills_at_the_limit_not_at_the_lower_price(tmp_path):
     clock, feed = Clock(), FakeFeed()
     whale_world(feed, clock, ask=105.0, bid=104.9)

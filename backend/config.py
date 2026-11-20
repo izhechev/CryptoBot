@@ -229,6 +229,7 @@ class Config:
     fear_greed_neutral_mult: float = 1.0
     fear_greed_greed_mult: float = 0.85
     fear_greed_extreme_greed_mult: float = 0.7
+    whale_breakout_retest: bool = False
 
 
 def _parse_roi(raw: dict | None, default_pct: float) -> list:
@@ -340,6 +341,7 @@ def load_config(yaml_path: str = "backend/config.yaml") -> Config:
         loss_cooldown_hours=float(exits.get("loss_cooldown_hours", 4.0)),
         reentry_cooldown_hours=float(exits.get("reentry_cooldown_hours", 2.0)),
         whale_entry_mode=str(whale.get("entry_mode", "chase")),
+        whale_breakout_retest=bool(whale.get("breakout_retest", False)),
         whale_retest_wait_candles=int(whale.get("retest_wait_candles", 8)),
         book_gate=bool(book.get("enabled", True)),
         max_spread_pct=float(book.get("max_spread_pct", 1.5)),

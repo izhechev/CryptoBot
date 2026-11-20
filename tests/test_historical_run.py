@@ -45,7 +45,8 @@ from backend.tools.run_backtest import (HoldoutError, build_record, holdout_gate
 from tests.offline import no_network  # noqa: F401  (autouse network guard)
 
 CONFIG = str(Path(__file__).resolve().parents[1] / "backend" / "config.yaml")
-CFG = replace(load_config(CONFIG), spot_enabled=False)     # isolate the whale lane
+# The hand-calculated fixture exercises the original spike-close retest at 104.
+CFG = replace(load_config(CONFIG), spot_enabled=False, whale_breakout_retest=False)
 VENUE = load_venue_settings(CONFIG)
 LS = load_ledger_settings(CONFIG)
 ENG = load_engine_settings(CONFIG)

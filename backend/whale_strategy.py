@@ -1,5 +1,7 @@
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional
+import numpy as np
 import pandas as pd
 from backend.config import Config
 
@@ -7,12 +9,68 @@ from backend.config import Config
 @dataclass
 class WhaleSignal:
     volume_ratio: float        # spike candle volume / its trailing average
-    price_thrust_pct: float    # % price move over the thrust lookback ending at the spike
-    thrust_close: float = 0.0  # close of the spike candle (follow-through reference)
-    as_of: str = ""            # timestamp of the spike candle — to gauge data age
+    price_thrust_pct: float    # spike thrust or percentage above the breakout high
+    thrust_close: float = 0.0  # actual close of the signal candle
+    as_of: str = ""            # opening timestamp of the signal candle
+    setup: str = "spike"
+    retest_price: Optional[float] = None
+
+    @property
+    def retest_limit(self) -> float:
+        return self.thrust_close if self.retest_price is None else self.retest_price
 
 
 _MIN_CANDLES = 20
+_QUARTER_HOUR = pd.Timedelta(minutes=15)
+
+
+def detect_breakout(df: pd.DataFrame, cfg: Config, *, as_of: datetime) -> Optional[WhaleSignal]:
+    """Check the last completed 15-minute candle against the preceding 24 clock hours.
+
+    Some venues omit zero-trade intervals. Count only traded intervals in the
+    baseline volume, equally for sparse and explicitly zero-filled histories.
+    """
+    if df is None or cfg.candle_timeframe != "15m" or not isinstance(df.index, pd.DatetimeIndex):
+        return None
+    index = df.index
+    if len(index) <= _MIN_CANDLES or not index.is_monotonic_increasing or not index.is_unique:
+        return None
+    # Legacy CCXT frames use naive UTC and the Kraken feeds use aware UTC.
+    index = index.tz_localize("UTC") if index.tz is None else index.tz_convert("UTC")
+    candle_open = pd.to_datetime(as_of, utc=True).floor("15min") - _QUARTER_HOUR
+    start = candle_open - pd.Timedelta(days=1)
+    if index[0] > start or candle_open not in index:
+        return None
+    bounds = slice(index.searchsorted(start), index.get_loc(candle_open) + 1)
+    times = index[bounds]
+    if not times.floor("15min").equals(times):
+        return None
+    window = df.iloc[bounds]
+    volume = window["volume"].to_numpy(dtype=float)
+    if not np.isfinite(volume).all() or (volume < 0).any() or volume[-1] <= 0:
+        return None
+    active = volume[:-1] > 0
+    if active.sum() < _MIN_CANDLES:
+        return None
+    ratio = volume[-1] / volume[:-1][active].mean()
+    if ratio < cfg.whale_volume_multiple:
+        return None
+    traded = window.loc[volume > 0, ["open", "high", "low", "close"]].astype(float)
+    prices = traded.to_numpy()
+    if not np.isfinite(prices).all() or (prices <= 0).any():
+        return None
+    prior_high = float(traded["high"].iloc[:-1].max())
+    close = float(traded["close"].iloc[-1])
+    if close <= prior_high or close * volume[-1] < cfg.whale_min_candle_volume_usd:
+        return None
+    return WhaleSignal(
+        volume_ratio=round(float(ratio), 2),
+        price_thrust_pct=round((close / prior_high - 1) * 100, 2),
+        thrust_close=close,
+        as_of=str(candle_open),
+        setup="breakout",
+        retest_price=prior_high,
+    )
 
 
 def _spike_at(df: pd.DataFrame, k: int, cfg: Config) -> Optional[tuple[float, float]]:
@@ -36,9 +94,10 @@ def _spike_at(df: pd.DataFrame, k: int, cfg: Config) -> Optional[tuple[float, fl
     return None
 
 
-def detect_whale(df: pd.DataFrame, cfg: Config) -> Optional[WhaleSignal]:
-    """
-    Detect a CONFIRMED whale footprint: an abnormal volume surge + sharp upward
+def detect_whale(df: pd.DataFrame, cfg: Config, *, as_of: Optional[datetime] = None) -> Optional[WhaleSignal]:
+    """Prefer an enabled breakout retest, otherwise detect a confirmed spike.
+
+    The existing spike check looks for an abnormal volume surge + sharp upward
     thrust on some candle within the detection window — not just the latest candle,
     which an hourly scan only "sees" for one candle-width (missing ~3/4 of spikes) —
     followed by price HOLDING the spike's gains since.
@@ -50,6 +109,17 @@ def detect_whale(df: pd.DataFrame, cfg: Config) -> Optional[WhaleSignal]:
     """
     if df is None or len(df) < _MIN_CANDLES:
         return None
+    if as_of is not None and isinstance(df.index, pd.DatetimeIndex) and cfg.candle_timeframe == "15m":
+        cutoff = pd.to_datetime(as_of, utc=True).tz_convert(df.index.tz) - _QUARTER_HOUR
+        if df.index[-1] > cutoff:
+            df = df.loc[df.index <= cutoff]
+            if len(df) < _MIN_CANDLES:
+                return None
+    if cfg.whale_breakout_retest and cfg.whale_entry_mode == "retest":
+        at = pd.Timestamp.now(tz="UTC") if as_of is None else as_of
+        breakout = detect_breakout(df, cfg, as_of=at)
+        if breakout is not None:
+            return breakout
 
     close = df["close"]
     volume = df["volume"]

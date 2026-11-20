@@ -72,6 +72,20 @@ live over WebSocket. A new scan runs every 30 minutes.
 
 ---
 
+## Watch Bitvavo breakouts
+
+From the project root, run the public-data watcher on the EUR pairs you want to follow.
+
+```bash
+python -m backend.tools.breakout_watch KERNEL-EUR --watch
+```
+
+It prints to the terminal after each 15-minute candle closes. Omit `--watch` for one check. A breakout requires a close above the previous 24-hour high, at least 3× the average volume of active intervals in that window, and the configured minimum candle turnover. The output includes the previous high, the price to watch for a pullback. It runs for as long as the process is on.
+
+On 20 November 2026 the KERNEL replay flagged the 08:45 Vienna close at €0.037658 and identified €0.037307 as the retest. In the preceding 60-day KERNEL sample, four earlier qualified alerts had full follow-up after a 24-hour repeat-alert cooldown. With a two-hour wait for a pullback and 24 hours to touch ±10% after a modeled fill, two reached the target first, one reached the stop first, and one reached neither. This small test used public prices and excluded fees and other strategy gates. [Original rally analysis](docs/v1/experiments/2026-11-20-kernel-rally.md)
+
+In CryptoBot's paper strategy, `whale.breakout_retest` enables this setup in retest mode on the engine's own data feed. Its buy limit rests at the broken high for up to eight 15-minute intervals with the current settings. The usual entry controls, including the BTC trend gate, still apply. For a frozen v1 paper account created before this feature, use its original configuration with `breakout_retest: false`; start a separate paper account to test the new setting.
+
 ## Configuration
 
 All thresholds live in [`backend/config.yaml`](backend/config.yaml) — score threshold,

@@ -135,7 +135,7 @@ def _train_result(split_mult: float):
     j = split + 1                                      # a candle INSIDE the test window
     df.iloc[j:, :4] = df.iloc[j:, :4] * split_mult
 
-    def fake_detect(window, c):
+    def fake_detect(window, c, *, as_of=None):
         return WhaleSignal(5.0, 4.5) if len(window) - 1 == target_i else None
 
     cfg = replace(CFG, whale_enabled=True, whale_entry_mode="chase")

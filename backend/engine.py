@@ -62,6 +62,9 @@ def effective_settings_hash(cfg: Config, ledger: LedgerSettings, venue: VenueSet
     """SHA-256 over every setting that can change behaviour, with secrets left out."""
     config_body = {k: v for k, v in asdict(cfg).items()
                    if not any(m in k.lower() for m in SECRET_MARKERS)}
+    # Disabled is the original strategy, including for previously initialized paper accounts.
+    if not cfg.whale_breakout_retest:
+        config_body.pop("whale_breakout_retest")
     body = {"config": config_body, "ledger": asdict(ledger), "venue": asdict(venue),
             "engine": asdict(eng)}
     return hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
@@ -605,7 +608,7 @@ class Engine:
 
     async def _whale_lane(self, now, altname, df15, df4, q, ok, why, bullish) -> None:
         verdicts = [R.regime_verdict("whale", bullish, self.cfg)]
-        v_detect, sig = R.whale_detect(df15, self.cfg)
+        v_detect, sig = R.whale_detect(df15, self.cfg, as_of=now)
         verdicts.append(v_detect)
         if sig is None:
             self._decide(now, altname, "whale", verdicts)
@@ -630,10 +633,10 @@ class Engine:
 
     def _place_retest(self, now: datetime, altname: str, sig, notional: Decimal) -> None:
         rules_ = self._rules(altname)
-        if rules_ is None or sig.thrust_close <= 0:
+        if rules_ is None or sig.retest_limit <= 0:
             self._decide(now, altname, "whale", [Verdict("ledger", R.FAIL, True, "no pair rules or price")])
             return
-        limit = round_price(rules_, Decimal(str(sig.thrust_close)), "buy")
+        limit = round_price(rules_, Decimal(str(sig.retest_limit)), "buy")
         volume = round_volume(rules_, notional / limit)
         expires = now + timedelta(minutes=CANDLE_MIN * self.cfg.whale_retest_wait_candles)
         try:
