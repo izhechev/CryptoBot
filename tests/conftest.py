@@ -67,3 +67,17 @@ def _never_write_the_live_journal(tmp_path, monkeypatch):
 
     monkeypatch.setattr(tj, "append_closed", guarded)
     monkeypatch.setattr(tracker_mod, "append_closed", guarded, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_breakout_state_files(tmp_path, monkeypatch):
+    """Redirect default breakout CSV/cooldown paths away from the repo working tree."""
+    import backend.tools.breakout_state as state_mod
+    import backend.tools.breakout_watch as watch_mod
+
+    csv_path = tmp_path / "signal_outcomes.csv"
+    cooldown_path = tmp_path / "cooldown_state.json"
+    monkeypatch.setattr(state_mod, "DEFAULT_OUTCOMES_CSV", csv_path)
+    monkeypatch.setattr(state_mod, "DEFAULT_COOLDOWN_FILE", cooldown_path)
+    monkeypatch.setattr(watch_mod, "DEFAULT_OUTCOMES_CSV", csv_path)
+    monkeypatch.setattr(watch_mod, "DEFAULT_COOLDOWN_FILE", cooldown_path)

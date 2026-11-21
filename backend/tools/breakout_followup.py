@@ -13,6 +13,8 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from backend.tools.breakout_state import format_decimal
+
 
 UTC = timezone.utc
 VIENNA = ZoneInfo("Europe/Vienna")
@@ -66,6 +68,10 @@ class FollowupState:
     retest_at: datetime | None = None
     low: Decimal | None = None
     low_at: datetime | None = None
+    high: Decimal | None = None
+    high_at: datetime | None = None
+    last_close: Decimal | None = None
+    exit_price: Decimal | None = None
 
     @classmethod
     def start(cls, market: str, close_time: datetime, level: float) -> FollowupState:
@@ -136,10 +142,25 @@ def advance(state: FollowupState, rows, until: datetime) -> list[FollowupEvent]:
             events.append(state.event(at, "retest",
                 f"RETEST observed at {_display(at)}. Price traded at or below €{state.level}. "
                 "This is a paper reference price."))
+        state.last_close = close
+        bar_high = max(state.level, close) if (entry_minute and opening > state.level) else high
+        if state.high is None or bar_high > state.high:
+            state.high, state.high_at = bar_high, at
         if state.low is None or low < state.low:
             state.low, state.low_at = low, at
         kind = _outcome(opening, high, low, close, state.level, entry_minute)
         if kind is not None:
+            upper, lower = state.level * Decimal("1.1"), state.level * Decimal("0.9")
+            if kind == "target":
+                state.exit_price = opening if (not entry_minute and opening >= upper) else upper
+                if state.high is None or state.exit_price > state.high:
+                    state.high, state.high_at = state.exit_price, at
+            elif kind == "stop":
+                state.exit_price = opening if (not entry_minute and opening <= lower) else lower
+                if state.low is None or state.exit_price < state.low:
+                    state.low, state.low_at = state.exit_price, at
+            else:
+                state.exit_price = None
             labels = {"target": f"PAPER +10% target €{state.level * Decimal('1.1')} reached",
                       "stop": f"PAPER −10% stop €{state.level * Decimal('0.9')} reached",
                       "ambiguous": "PAPER outcome unclear from the order of trades in the minute"}
@@ -150,9 +171,11 @@ def advance(state: FollowupState, rows, until: datetime) -> list[FollowupEvent]:
     if until >= state.deadline:
         at = state.deadline
         if state.retest_at:
+            state.exit_price = state.last_close
             event = state.event(at, "timeout", f"PAPER 24h follow-up ended at {_display(at)}. "
                                 f"Neither ±10% level was reached. {_dip(state)}")
         else:
+            state.exit_price = None
             event = state.event(at, "expired", f"RETEST window ended at {_display(at)}. "
                                 f"No trade touched €{state.level} within two hours.")
         events.append(event)
@@ -189,6 +212,25 @@ def fetch_minute_rows(client: httpx.Client, market: str, start: datetime, until:
         start = end
 
 
+OUTCOME_LABELS = {
+    "target": "WIN",
+    "stop": "LOSS",
+    "expired": "EXPIRED",
+    "timeout": "EXPIRED",
+    "ambiguous": "AMBIGUOUS",
+}
+_EXTRA_SETUP_COLUMNS = (
+    ("high", "TEXT"),
+    ("high_at", "INTEGER"),
+    ("last_close", "TEXT"),
+    ("exit_price", "TEXT"),
+    ("confidence", "TEXT"),
+    ("pct_above_24h_high", "REAL"),
+    ("vol_multiple_active", "REAL"),
+    ("turnover_eur", "REAL"),
+)
+
+
 class FollowupTracker:
     def __init__(self, path: str | Path = DEFAULT_DB):
         if str(path) != ":memory:":
@@ -201,7 +243,11 @@ class FollowupTracker:
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS setups(
                 market TEXT, signal INTEGER, level TEXT, status TEXT, cursor INTEGER,
-                retest INTEGER, low TEXT, low_at INTEGER, PRIMARY KEY(market, signal));
+                retest INTEGER, low TEXT, low_at INTEGER,
+                high TEXT, high_at INTEGER, last_close TEXT, exit_price TEXT,
+                confidence TEXT, pct_above_24h_high REAL,
+                vol_multiple_active REAL, turnover_eur REAL,
+                PRIMARY KEY(market, signal));
             CREATE UNIQUE INDEX IF NOT EXISTS active_setup
                 ON setups(market) WHERE status != 'done';
             CREATE TABLE IF NOT EXISTS initial_alerts(
@@ -211,6 +257,14 @@ class FollowupTracker:
                 claimed_until REAL DEFAULT 0, delivered INTEGER DEFAULT 0,
                 PRIMARY KEY(market, signal, kind));
         """)
+        self._ensure_setup_columns()
+
+    def _ensure_setup_columns(self) -> None:
+        existing = {row["name"] for row in self.db.execute("PRAGMA table_info(setups)").fetchall()}
+        with self.db:
+            for column, col_type in _EXTRA_SETUP_COLUMNS:
+                if column not in existing:
+                    self.db.execute(f"ALTER TABLE setups ADD COLUMN {column} {col_type}")
 
     def close(self):
         self.db.close()
@@ -225,15 +279,39 @@ class FollowupTracker:
                               (market,)).fetchone()
         return Decimal(row["level"]) if row is not None else None
 
-    def stage(self, market: str, close_time: datetime, prior_high: float) -> bool:
+    def stage(
+        self,
+        market: str,
+        close_time: datetime,
+        prior_high: float,
+        *,
+        confidence: str = "moderate",
+        pct_above_24h_high: float | None = None,
+        vol_multiple_active: float | None = None,
+        turnover_eur: float | None = None,
+    ) -> bool:
         state = FollowupState.start(market, close_time, prior_high)
         stamp = _ts(state.signal_at)
         with self.db:
             return self.db.execute(
-                "INSERT OR IGNORE INTO setups(market, signal, level, status, cursor) "
-                "SELECT ?,?,?,'waiting',? WHERE NOT EXISTS (SELECT 1 FROM setups "
+                "INSERT OR IGNORE INTO setups(market, signal, level, status, cursor, "
+                "confidence, pct_above_24h_high, vol_multiple_active, turnover_eur) "
+                "SELECT ?,?,?,'waiting',?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM setups "
                 "WHERE market=? AND (signal>=? OR cursor>?))",
-                (market, stamp, str(state.level), stamp, market, stamp, stamp)).rowcount == 1
+                (
+                    market,
+                    stamp,
+                    str(state.level),
+                    stamp,
+                    confidence,
+                    pct_above_24h_high,
+                    vol_multiple_active,
+                    turnover_eur,
+                    market,
+                    stamp,
+                    stamp,
+                ),
+            ).rowcount == 1
 
     def ack(self, event: FollowupEvent) -> None:
         with self.db:
@@ -254,7 +332,11 @@ class FollowupTracker:
                                       _dt(row["cursor"]), row["status"],
                                       _dt(row["retest"]) if row["retest"] is not None else None,
                                       Decimal(row["low"]) if row["low"] is not None else None,
-                                      _dt(row["low_at"]) if row["low_at"] is not None else None)
+                                      _dt(row["low_at"]) if row["low_at"] is not None else None,
+                                      Decimal(row["high"]) if row["high"] is not None else None,
+                                      _dt(row["high_at"]) if row["high_at"] is not None else None,
+                                      Decimal(row["last_close"]) if row["last_close"] is not None else None,
+                                      Decimal(row["exit_price"]) if row["exit_price"] is not None else None)
                 try:
                     self._refresh(client, state, cutoff)
                 except (httpx.HTTPError, ValueError, InvalidOperation, TypeError, OverflowError) as exc:
@@ -283,18 +365,87 @@ class FollowupTracker:
             events = advance(state, fetch_minute_rows(client, state.market, start, end), end)
             with self.db:
                 changed = self.db.execute(
-                    "UPDATE setups SET status=?, cursor=?, retest=?, low=?, low_at=? "
+                    "UPDATE setups SET status=?, cursor=?, retest=?, low=?, low_at=?, "
+                    "high=?, high_at=?, last_close=?, exit_price=? "
                     "WHERE market=? AND signal=? AND cursor=? AND status!='done'",
                     (state.status, _ts(state.cursor), _ts(state.retest_at) if state.retest_at else None,
                      str(state.low) if state.low is not None else None,
-                     _ts(state.low_at) if state.low_at else None, state.market,
-                     _ts(state.signal_at), _ts(start)))
+                     _ts(state.low_at) if state.low_at else None,
+                     str(state.high) if state.high is not None else None,
+                     _ts(state.high_at) if state.high_at else None,
+                     str(state.last_close) if state.last_close is not None else None,
+                     str(state.exit_price) if state.exit_price is not None else None,
+                     state.market, _ts(state.signal_at), _ts(start)))
                 if not changed.rowcount:
                     return  # Another watcher already processed this range.
                 self.db.executemany("INSERT INTO followup_events(market,signal,stamp,kind,detail) "
                                     "VALUES(?,?,?,?,?)",
                                     [(e.market, _ts(e.signal_at), _ts(e.at), e.kind, e.detail)
                                      for e in events])
+
+    def outcome_record(self, event: FollowupEvent) -> dict[str, str] | None:
+        outcome = OUTCOME_LABELS.get(event.kind)
+        if outcome is None:
+            return None
+        row = self.db.execute(
+            "SELECT * FROM setups WHERE market=? AND signal=?",
+            (event.market, _ts(event.signal_at)),
+        ).fetchone()
+        if row is None:
+            return None
+        signal_at = _dt(row["signal"])
+        level = Decimal(row["level"])
+        tp = level * Decimal("1.1")
+        sl = level * Decimal("0.9")
+        retested = row["retest"] is not None
+        entry = level if retested else None
+        exit_px = Decimal(row["exit_price"]) if row["exit_price"] is not None else None
+        high = Decimal(row["high"]) if row["high"] is not None else None
+        low = Decimal(row["low"]) if row["low"] is not None else None
+
+        pnl_pct = f"{(exit_px / entry - 1) * 100:.2f}" if (entry and exit_px is not None) else ""
+        mfe_pct = f"{max(Decimal(0), (high / entry - 1) * 100):.2f}" if (entry and high is not None) else ""
+        mae_pct = f"{min(Decimal(0), (low / entry - 1) * 100):.2f}" if (entry and low is not None) else ""
+
+        return {
+            "signal_timestamp_utc": signal_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "signal_timestamp_vienna": signal_at.astimezone(VIENNA).isoformat(),
+            "market": row["market"],
+            "confidence": row["confidence"] or "moderate",
+            "entry_price": format_decimal(entry),
+            "prior_24h_high": format_decimal(level),
+            "pct_above_24h_high": (
+                f"{row['pct_above_24h_high']:.2f}" if row["pct_above_24h_high"] is not None else ""
+            ),
+            "vol_multiple_active": (
+                f"{row['vol_multiple_active']:.2f}" if row["vol_multiple_active"] is not None else ""
+            ),
+            "turnover_eur": f"{row['turnover_eur']:.2f}" if row["turnover_eur"] is not None else "",
+            "tp_target_price": format_decimal(tp),
+            "sl_target_price": format_decimal(sl),
+            "outcome": outcome,
+            "exit_price": format_decimal(exit_px),
+            "pnl_pct": pnl_pct,
+            "mfe_pct": mfe_pct,
+            "mae_pct": mae_pct,
+            "resolved_timestamp_vienna": event.at.astimezone(VIENNA).isoformat(),
+        }
+
+    def setup_peak_price(self, market: str, signal_at: datetime) -> float | None:
+        row = self.db.execute(
+            "SELECT high, exit_price, level FROM setups WHERE market=? AND signal=?",
+            (market, _ts(signal_at)),
+        ).fetchone()
+        if row is None:
+            return None
+        candidates = []
+        for field in ("high", "exit_price", "level"):
+            raw = row[field]
+            if raw is not None:
+                val = float(raw)
+                if val > 0:
+                    candidates.append(val)
+        return max(candidates) if candidates else None
 
     def _pending(self) -> list[FollowupEvent]:
         # A second running scanner cannot deliver a claimed event concurrently; a

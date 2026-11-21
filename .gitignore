@@ -18,6 +18,8 @@ trade_journal.csv
 entry_log.md
 position_snapshots.md
 baseline_*.csv
+data/signal_outcomes.csv
+data/cooldown_state.json
 
 # Safety backups taken before destructive operations (*.db is already ignored,
 # but the dated .bak- suffixes are not).
