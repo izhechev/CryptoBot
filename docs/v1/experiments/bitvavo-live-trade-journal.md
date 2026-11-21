@@ -26,3 +26,20 @@ Net results below reflect reported Bitvavo EUR cash flows (EUR received minus EU
 - **Bitvavo OCO availability and exit workflow:** Bitvavo Pro Web currently lacks OCO orders (available on Bitvavo Pro App, marked "coming soon" on Pro Web). Until OCO is available on Pro Web, live trades require either placing the OCO in the Pro App, placing a single Stop Market order on Pro Web, or running programmatic TP/SL monitoring via API.
 - **Entry discipline and universe filtering:** Avoid chasing immediate 15m candle closes without waiting for retest hold confirmation (as on YB-EUR), and exclude large-cap majors like ETH from the low-cap breakout scanner.
 - **Scanner tooling follow-ups (`backend/tools/breakout_watch.py`):** Fix Bitvavo API read timeouts and add 5m / intra-candle detection in `breakout_watch.py`.
+
+## Trade Autopsy Summary (20-21 Nov 2026)
+
+Diagnostic comparison generated via `backend/tools/trade_autopsy.py` at `2026-11-21 10:15 Vienna`. Note: `DODO-EUR` (`45.9m` elapsed) and `ZKP-EUR` (`15.9m` elapsed) reflect partial post-entry windows; `ELSA-EUR` (`18:00`) was a delayed pullback entry 30 minutes after the `17:30` confirmed breakout.
+
+| Market & Timestamp (Vienna) | Breakout Shape (Sustained vs Single Spike) | 15m Close vs Prior 24h High (%) | Next Two 5m Hold (PASSED / FAILED) | Post-Entry MFE % / MAE % | Key Takeaway |
+|---|---|---:|---|---|---|
+| ICNT-EUR (20 Nov 03:08) | Sustained (10/15m, 4 green) | -5.14% | FAILED | +0.78% / -2.72% | Not a 24h breakout; thin €1.3k leg rolled over |
+| ETH-EUR (20 Nov 16:10) | Sustained (15/15m, 4 green) | -3.87% | FAILED | +0.18% / -5.66% | Below 24h high; hit by heavy macro selloff |
+| ELSA-EUR (20 Nov 18:00) | Single 1m Spike (9/15m, 63% top-1) | -2.87% | FAILED | +4.42% / -2.27% | 30m post-signal pullback; shallow dip then +4.42% run |
+| YB-EUR (21 Nov 09:15) | Sustained (15/15m, 12 green) | +0.09% | FAILED | +0.27% / -9.76% | Marginal close faded immediately; -9.76% drop |
+| DODO-EUR (21 Nov 09:30) | Sustained (14/15m, 10 green) | +1.92% | PASSED | +8.36% / -3.46% | Decisive close + clean two-5m hold; surged +8.36% |
+| ZKP-EUR (21 Nov 10:00) | Sustained (8/15m, 3 green) | +1.15% | PASSED | +1.54% / -1.07% | Decisive close + clean two-5m hold (16m partial) |
+
+- **Decisive 15m close + two-5m hold separates real breakouts from traps:** On fresh breakout entries, `DODO` (`+1.92%`) and `ZKP` (`+1.15%`) closed cleanly above their prior 24h highs and held both subsequent 5m candles on rising volume, whereas `YB` barely cleared (`+0.09%`), failed both 5m holds immediately, and dropped `-9.76%`. `ICNT` (`-5.14%`) and `ETH` (`-3.87%`) were not even above their prior 24h highs at entry.
+- **Sustained pre-entry 1m buying alone is not a filter:** Every loser (`ICNT`, `ETH`, `YB`) showed sustained multi-minute buying before entry (`YB` had `15/15` active 1m bars and `276` broad prints), proving pre-close volume breadth cannot replace post-close confirmation above the 24h high.
+- **Excursion path separates continuation from immediate fades (including pullback entries):** Winners (`DODO` `+8.36% / -3.46%` and `ELSA` `+4.42% / -2.27%` entered on a 30m post-breakout pullback) saw a contained dip first (`MAE before MFE`) followed by `2x+` upside expansion, while all three losers peaked almost immediately (`MFE < +0.8%`, `MFE before MAE`) and trended steadily down.
