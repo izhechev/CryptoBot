@@ -27,6 +27,9 @@ from backend.config import Config, load_config
 from backend.whale_strategy import WhaleSignal, detect_breakout
 from backend.tools.breakout_levels import classify_breakout
 from backend.tools.breakout_notify import notify_breakout
+from backend.tools.breakout_state import (
+    CooldownManager, DEFAULT_COOLDOWN_FILE, DEFAULT_OUTCOMES_CSV, SignalOutcomeLogger,
+)
 
 INTERVAL = timedelta(minutes=15)
 PUBLICATION_DELAY = timedelta(seconds=5)
@@ -129,7 +132,8 @@ def fetch_candles(client: httpx.Client, market: str, close_time: datetime) -> pd
 
 
 def scan(client: httpx.Client, cfg: Config, markets: list[str], close_time: datetime,
-         checked: dict[str, datetime], *, observed_at: datetime | None = None, notify: bool = False) -> bool:
+         checked: dict[str, datetime], *, observed_at: datetime | None = None,
+         notify: bool = False, cooldown: CooldownManager | None = None) -> bool:
     """Retry failures, and briefly allow for a late final candle in watch mode."""
     success = True
     for market in markets:
@@ -148,7 +152,20 @@ def scan(client: httpx.Client, cfg: Config, markets: list[str], close_time: date
             continue
 
         if signal is not None:
-            detail = (f"BREAKOUT close €{signal.thrust_close:.12g}, "
+            tag = None
+            if cooldown is not None:
+                decision = cooldown.check_confirmed(market, close_time, signal.thrust_close)
+                if not decision.allowed:
+                    print(
+                        f"{close_time:%Y-%m-%d %H:%M} UTC  {market}  "
+                        f"CONFIRMED BREAKOUT suppressed ({decision.reason})",
+                        flush=True,
+                    )
+                    checked[market] = close_time
+                    continue
+                tag = decision.tag
+            prefix = f"[{tag}] " if tag else ""
+            detail = (f"{prefix}BREAKOUT close €{signal.thrust_close:.12g}, "
                       f"prior 24h high €{signal.retest_limit:.12g}, "
                       f"volume {signal.volume_ratio:.2f}x")
         elif not has_candle:
@@ -158,14 +175,21 @@ def scan(client: httpx.Client, cfg: Config, markets: list[str], close_time: date
         print(f"{close_time:%Y-%m-%d %H:%M} UTC  {market}  {detail}", flush=True)
         if notify and signal is not None:
             notify_breakout(market, detail)
+        if signal is not None and cooldown is not None:
+            start = close_time - INTERVAL
+            candle_high = float(bars.loc[start, "high"]) if start in bars.index else signal.thrust_close
+            cooldown.record_alert(market, close_time, max(signal.thrust_close, candle_high))
         checked[market] = close_time
     return success
 
 
 def alert_detail(level: str, signal: WhaleSignal, cfg: Config, turnover: float,
-                 candle_open: float | None = None) -> str:
-    label = ("CONFIRMED BREAKOUT (moderate setup confidence)" if level == "confirmed"
-             else "EARLY BREAKOUT (low setup confidence)")
+                 candle_open: float | None = None, *, tag: str | None = None) -> str:
+    if level == "confirmed":
+        prefix = f"CONFIRMED BREAKOUT [{tag}]" if tag else "CONFIRMED BREAKOUT"
+        label = f"{prefix} (moderate setup confidence)"
+    else:
+        label = "EARLY BREAKOUT (low setup confidence)"
     candle_change = (f", 15m change {(signal.thrust_close / candle_open - 1) * 100:+.2f}%"
                      if candle_open is not None and candle_open > 0 else "")
     return (f"{label}  close €{signal.thrust_close:.12g}{candle_change} (+{signal.price_thrust_pct:g}% above "
@@ -176,7 +200,8 @@ def alert_detail(level: str, signal: WhaleSignal, cfg: Config, turnover: float,
 
 def _evaluate_market(market: str, bars: pd.DataFrame, cfg: Config, closes: list[datetime],
                      checked: dict[str, datetime], observed_at: datetime | None,
-                     on_alert: AlertCallback | None, notify: bool, tracker) -> tuple[int, int]:
+                     on_alert: AlertCallback | None, notify: bool, tracker,
+                     cooldown: CooldownManager | None = None) -> tuple[int, int]:
     alerts = missing = 0
     for close in closes:
         if market in checked and checked[market] >= close:
@@ -190,22 +215,41 @@ def _evaluate_market(market: str, bars: pd.DataFrame, cfg: Config, closes: list[
             result = classify_breakout(bars, cfg, as_of=close)
             if result:
                 level, signal = result
+                tag = None
+                if level == "confirmed" and cooldown is not None:
+                    decision = cooldown.check_confirmed(market, close, signal.thrust_close)
+                    if not decision.allowed:
+                        checked[market] = close
+                        continue
+                    tag = decision.tag
+                turnover = signal.thrust_close * float(bars.loc[start, "volume"])
+                candle_open = float(bars.loc[start, "open"])
+                candle_high = float(bars.loc[start, "high"])
                 followup = ""
                 if tracker is not None and level == "confirmed":
-                    if not tracker.stage(market, close, signal.retest_limit):
+                    staged = tracker.stage(
+                        market,
+                        close,
+                        signal.retest_limit,
+                        confidence="moderate",
+                        pct_above_24h_high=signal.price_thrust_pct,
+                        vol_multiple_active=signal.volume_ratio,
+                        turnover_eur=round(turnover, 2),
+                    )
+                    if not staged:
                         active = tracker.active_level(market)
                         followup = (f". Already following the retest at €{active}." if active is not None
                                     else ". Follow-up for this setup already completed.")
                 if tracker is None or tracker.mark_alert(market, close, level):
-                    turnover = signal.thrust_close * float(bars.loc[start, "volume"])
-                    candle_open = float(bars.loc[start, "open"])
-                    detail = alert_detail(level, signal, cfg, turnover, candle_open) + followup
+                    detail = alert_detail(level, signal, cfg, turnover, candle_open, tag=tag) + followup
                     stamps = f"{close:%Y-%m-%d %H:%M} UTC / {close.astimezone(VIENNA):%Y-%m-%d %H:%M} Vienna"
                     print(f"{stamps}  {market}  {detail}", flush=True)
                     if notify:
                         notify_breakout(market, f"{stamps}  {detail}")
                     if on_alert:
                         on_alert(market, close, signal, level)
+                    if level == "confirmed" and cooldown is not None:
+                        cooldown.record_alert(market, close, max(signal.thrust_close, candle_high))
                     alerts += 1
         checked[market] = close
     return alerts, missing
@@ -214,7 +258,8 @@ def _evaluate_market(market: str, bars: pd.DataFrame, cfg: Config, closes: list[
 def scan_all(client: httpx.Client, cfg: Config, markets: list[str], close_time: datetime,
              checked: dict[str, datetime], *, observed_at: datetime | None = None,
              on_alert: AlertCallback | None = None, lookback_bars: int = 1,
-             notify: bool = False, tracker=None, between_batches: Callable[[], None] | None = None) -> bool:
+             notify: bool = False, tracker=None, between_batches: Callable[[], None] | None = None,
+             cooldown: CooldownManager | None = None) -> bool:
     """Read each market once and evaluate its completed candles from oldest to newest."""
     if not 1 <= lookback_bars <= 4:
         raise ValueError("lookback_bars must be between 1 and 4")
@@ -231,7 +276,7 @@ def scan_all(client: httpx.Client, cfg: Config, markets: list[str], close_time: 
             for market, future in futures.items():
                 try:
                     counts = _evaluate_market(market, future.result(), cfg, closes, checked, observed_at,
-                                              on_alert, notify, tracker)
+                                              on_alert, notify, tracker, cooldown)
                     alerts += counts[0]
                     missing += counts[1]
                 except (httpx.HTTPError, ValueError, TypeError, OverflowError) as exc:
@@ -243,12 +288,25 @@ def scan_all(client: httpx.Client, cfg: Config, markets: list[str], close_time: 
     return completed == len(markets)
 
 
-def dispatch_followups(client: httpx.Client, tracker, notify: bool) -> bool:
+def dispatch_followups(client: httpx.Client, tracker, notify: bool, *,
+                       outcome_logger: SignalOutcomeLogger | None = None,
+                       cooldown: CooldownManager | None = None) -> bool:
     now = datetime.now(timezone.utc)
     for event in tracker.poll(client, now):
         print(f"{event.at:%Y-%m-%d %H:%M} UTC  {event.market}  {event.detail}", flush=True)
         if notify:
             notify_breakout(event.market, event.detail)
+        if outcome_logger is not None:
+            record = tracker.outcome_record(event)
+            if record is not None:
+                outcome_logger.log_outcome(record)
+        if cooldown is not None and event.kind in {"target", "stop", "timeout", "ambiguous"}:
+            cooldown.record_resolution(
+                event.market,
+                event.at,
+                peak_price=tracker.setup_peak_price(event.market, event.signal_at),
+                kind=event.kind,
+            )
         tracker.ack(event)
     if tracker.blocked_until:
         delay = (tracker.blocked_until - datetime.now(timezone.utc)).total_seconds()
@@ -266,6 +324,12 @@ def main() -> int:
                         help="number of closed quarters to check with a one-off --all scan (default 1)")
     parser.add_argument("--notify", action="store_true", help="send desktop notifications for signals and follow-ups")
     parser.add_argument("--state", type=Path, help="SQLite file for --all alert deduplication and retest monitoring")
+    parser.add_argument("--cooldown-minutes", type=int, default=180,
+                        help="minutes to suppress repeat CONFIRMED BREAKOUT alerts per market (default 180; 0 disables)")
+    parser.add_argument("--cooldown-file", type=Path, default=None,
+                        help="JSON file for persisting per-market cooldown state (default data/cooldown_state.json)")
+    parser.add_argument("--outcomes-csv", type=Path, default=None,
+                        help="CSV file for logging resolved paper trade outcomes (default data/signal_outcomes.csv)")
     args = parser.parse_args()
     if bool(args.markets) == args.all:
         parser.error("choose either --all or one or more named EUR markets")
@@ -273,6 +337,8 @@ def main() -> int:
         parser.error("--lookback-bars above 1 is available only with a one-off --all scan")
     if args.state and not args.all:
         parser.error("--state requires --all")
+    if args.cooldown_minutes < 0:
+        parser.error("--cooldown-minutes must be >= 0")
 
     cfg = load_config()
     checked: dict[str, datetime] = {}
@@ -280,10 +346,18 @@ def main() -> int:
     discovered = completed = None
     budget = RequestBudget()
     hooks = {"request": [budget.before], "response": [budget.after]} if args.all else {}
+    cooldown = (
+        CooldownManager(args.cooldown_file or DEFAULT_COOLDOWN_FILE, cooldown_minutes=args.cooldown_minutes)
+        if args.cooldown_minutes > 0
+        else None
+    )
+    outcome_logger = None
     tracker = None
     if args.all and (args.state or args.watch):
         from backend.tools.breakout_followup import FollowupTracker
         tracker = FollowupTracker(args.state) if args.state else FollowupTracker()
+        outcome_logger = SignalOutcomeLogger(args.outcomes_csv or DEFAULT_OUTCOMES_CSV)
+        outcome_logger.ensure_file()
     try:
         with httpx.Client(base_url=BASE_URL, timeout=10.0, event_hooks=hooks) as client:
             last_poll = None
@@ -292,7 +366,13 @@ def main() -> int:
                 nonlocal last_poll
                 minute = (datetime.now(timezone.utc) - PUBLICATION_DELAY).replace(second=0, microsecond=0)
                 if tracker is not None and minute != last_poll:
-                    dispatch_followups(client, tracker, args.notify)
+                    dispatch_followups(
+                        client,
+                        tracker,
+                        args.notify,
+                        outcome_logger=outcome_logger,
+                        cooldown=cooldown,
+                    )
                     last_poll = minute
 
             while True:
@@ -309,10 +389,12 @@ def main() -> int:
                             success = scan_all(client, cfg, markets, close_time, checked,
                                                observed_at=now if args.watch else None, notify=args.notify,
                                                lookback_bars=args.lookback_bars, tracker=tracker,
-                                               between_batches=poll_if_due if args.watch else None)
+                                               between_batches=poll_if_due if args.watch else None,
+                                               cooldown=cooldown)
                         else:
                             success = scan(client, cfg, markets, close_time, checked,
-                                           observed_at=now if args.watch else None, notify=args.notify)
+                                           observed_at=now if args.watch else None, notify=args.notify,
+                                           cooldown=cooldown)
                         if success:
                             completed = close_time
                 except RateLimited as exc:
@@ -328,7 +410,16 @@ def main() -> int:
                         if args.watch:
                             poll_if_due()
                         else:
-                            success = dispatch_followups(client, tracker, args.notify) and success
+                            success = (
+                                dispatch_followups(
+                                    client,
+                                    tracker,
+                                    args.notify,
+                                    outcome_logger=outcome_logger,
+                                    cooldown=cooldown,
+                                )
+                                and success
+                            )
                     except RateLimited as exc:
                         print(f"Follow-ups incomplete: {exc}", file=sys.stderr, flush=True)
                         if not args.watch:
