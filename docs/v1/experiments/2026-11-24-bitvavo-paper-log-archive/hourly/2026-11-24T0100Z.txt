@@ -1,0 +1,6 @@
+24 Nov 01:15 Vienna  IQ-EUR  EARLY BREAKOUT (low setup confidence)  close €0.0005512, 15m change +1.70% (+0.86% above prior 24h high €0.0005465); volume 139.95x active (235.7x including quiet intervals), turnover ~€2,891; confirmation needs 3x active and €10,000
+24 Nov 01:18 Vienna  LISTA-EUR  PAPER +10% target €0.0883542 reached at 24 Nov 01:18 Vienna. Retest €0.080322 at 23 Nov 19:10 Vienna. Lowest print through the final minute €0.078593 (-2.15%) at 23 Nov 20:28 Vienna.
+24 Nov 01:30 Vienna  LISTA-EUR  CONFIRMED BREAKOUT (moderate setup confidence)  close €0.09036, 15m change +3.48% (+3.22% above prior 24h high €0.087539); volume 8.45x active (8.54x including quiet intervals), turnover ~€27,922; confirmation needs 3x active and €10,000
+24 Nov 01:30 Vienna  SOLV-EUR  EARLY BREAKOUT (low setup confidence)  close €0.00382, 15m change -0.14% (+0.16% above prior 24h high €0.0038138); volume 15.02x active (24.44x including quiet intervals), turnover ~€2,075; confirmation needs 3x active and €10,000
+24 Nov 01:32 Vienna  LISTA-EUR  RETEST observed at 24 Nov 01:32 Vienna. Price traded at or below €0.087539. This is a paper reference price.
+Hour ending 2026-11-24 01:00 UTC: 423 markets checked, 5 events, 0 errors.

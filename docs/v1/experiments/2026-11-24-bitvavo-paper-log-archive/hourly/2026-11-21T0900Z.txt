@@ -1,0 +1,12 @@
+21 Nov 09:13 Vienna  DODO-EUR  PAPER +10% target €0.03278 reached at 21 Nov 09:13 Vienna. Retest €0.0298 at 20 Nov 16:51 Vienna. Lowest print through the final minute €0.028878 (-3.09%) at 20 Nov 19:06 Vienna.
+21 Nov 09:15 Vienna  YB-EUR  CONFIRMED BREAKOUT (moderate setup confidence)  close €0.05525, 15m change +5.02% (+0.09% above prior 24h high €0.0552); volume 10.92x active (11.03x including quiet intervals), turnover ~€35,227; confirmation needs 3x active and €10,000
+21 Nov 09:22 Vienna  DRV-EUR  RETEST observed at 21 Nov 09:22 Vienna. Price traded at or below €0.2518. This is a paper reference price.
+21 Nov 09:22 Vienna  VVV-EUR  RETEST observed at 21 Nov 09:22 Vienna. Price traded at or below €19.5139. This is a paper reference price.
+21 Nov 09:26 Vienna  YB-EUR  RETEST observed at 21 Nov 09:26 Vienna. Price traded at or below €0.05102. This is a paper reference price.
+21 Nov 09:30 Vienna  DODO-EUR  CONFIRMED BREAKOUT (moderate setup confidence)  close €0.033632, 15m change +2.06% (+1.92% above prior 24h high €0.033); volume 4.97x active (5.55x including quiet intervals), turnover ~€15,754; confirmation needs 3x active and €10,000
+21 Nov 09:40 Vienna  DODO-EUR  RETEST observed at 21 Nov 09:40 Vienna. Price traded at or below €0.033. This is a paper reference price.
+21 Nov 09:45 Vienna  DODO-EUR  CONFIRMED BREAKOUT (moderate setup confidence)  close €0.034481, 15m change +2.50% (+0.84% above prior 24h high €0.034193); volume 6.15x active (6.87x including quiet intervals), turnover ~€21,145; confirmation needs 3x active and €10,000
+21 Nov 09:45 Vienna  MERL-EUR  EARLY BREAKOUT (low setup confidence)  close €0.024136, 15m change +2.48% (+0.03% above prior 24h high €0.024129); volume 10.12x active (12.61x including quiet intervals), turnover ~€7,883; confirmation needs 3x active and €10,000
+21 Nov 10:00 Vienna  DODO-EUR  CONFIRMED BREAKOUT (moderate setup confidence)  close €0.035032, 15m change +1.01% (+1.07% above prior 24h high €0.03466); volume 9.59x active (10.58x including quiet intervals), turnover ~€35,451; confirmation needs 3x active and €10,000
+21 Nov 10:00 Vienna  ZKP-EUR  CONFIRMED BREAKOUT (moderate setup confidence)  close €0.029571, 15m change +1.95% (+1.15% above prior 24h high €0.029234); volume 16.34x active (17.42x including quiet intervals), turnover ~€22,633; confirmation needs 3x active and €10,000
+Hour ending 2026-11-21 09:00 UTC: 424 markets checked, 11 events, 0 errors.

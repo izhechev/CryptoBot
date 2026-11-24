@@ -1,0 +1,4 @@
+21 Nov 07:15 Vienna  BREV-EUR  PAPER −10% stop €0.062091 reached at 21 Nov 07:15 Vienna. Retest €0.06899 at 21 Nov 04:32 Vienna. Lowest print through the final minute €0.0617 (-10.57%) at 21 Nov 07:15 Vienna.
+21 Nov 07:45 Vienna  SAPIEN-EUR  CONFIRMED BREAKOUT (moderate setup confidence)  close €0.040695, 15m change +2.46% (+3.04% above prior 24h high €0.039496); volume 4.69x active (4.84x including quiet intervals), turnover ~€20,087; confirmation needs 3x active and €10,000
+21 Nov 08:00 Vienna  VVV-EUR  CONFIRMED BREAKOUT (moderate setup confidence)  close €20.0424, 15m change +4.51% (+2.71% above prior 24h high €19.5139); volume 6.07x active (6.19x including quiet intervals), turnover ~€31,535; confirmation needs 3x active and €10,000
+Hour ending 2026-11-21 07:00 UTC: 424 markets checked, 3 events, 0 errors.

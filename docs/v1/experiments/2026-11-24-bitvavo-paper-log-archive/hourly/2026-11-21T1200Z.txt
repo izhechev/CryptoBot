@@ -1,0 +1,4 @@
+21 Nov 12:15 Vienna  DRV-EUR  CONFIRMED BREAKOUT (moderate setup confidence)  close €0.28444, 15m change +4.88% (+2.43% above prior 24h high €0.2777); volume 4.24x active (4.38x including quiet intervals), turnover ~€20,474; confirmation needs 3x active and €10,000
+21 Nov 12:30 Vienna  SAPIEN-EUR  CONFIRMED BREAKOUT (moderate setup confidence)  close €0.042302, 15m change +5.48% (+1.49% above prior 24h high €0.041682); volume 9.91x active (10.23x including quiet intervals), turnover ~€54,040; confirmation needs 3x active and €10,000
+21 Nov 13:00 Vienna  DRV-EUR  CONFIRMED BREAKOUT (moderate setup confidence)  close €0.29423, 15m change +1.71% (+0.85% above prior 24h high €0.29175); volume 4.73x active (4.89x including quiet intervals), turnover ~€26,429; confirmation needs 3x active and €10,000
+Hour ending 2026-11-21 12:00 UTC: 424 markets checked, 3 events, 0 errors.

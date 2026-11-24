@@ -1,0 +1,5 @@
+23 Nov 23:15 Vienna  TREAD-EUR  EARLY BREAKOUT (low setup confidence)  close €0.97379, 15m change +1.88% (+1.52% above prior 24h high €0.95919); volume 2.71x active (4.81x including quiet intervals), turnover ~€791; confirmation needs 3x active and €10,000
+23 Nov 23:15 Vienna  ZRC-EUR  CONFIRMED BREAKOUT (moderate setup confidence)  close €0.0009584, 15m change +16.38% (+12.15% above prior 24h high €0.0008546); volume 20.74x active (32.64x including quiet intervals), turnover ~€14,062; confirmation needs 3x active and €10,000
+23 Nov 23:30 Vienna  VERONA-EUR  EARLY BREAKOUT (low setup confidence)  close €0.07992, 15m change +0.10% (+0.1% above prior 24h high €0.07984); volume 8.65x active (21.3x including quiet intervals), turnover ~€34; confirmation needs 3x active and €10,000
+23 Nov 23:35 Vienna  ZRC-EUR  RETEST observed at 23 Nov 23:35 Vienna. Price traded at or below €0.0008546. This is a paper reference price.
+Hour ending 2026-11-23 23:00 UTC: 423 markets checked, 4 events, 0 errors.

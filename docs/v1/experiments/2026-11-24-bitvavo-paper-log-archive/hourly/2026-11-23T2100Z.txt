@@ -1,0 +1,4 @@
+23 Nov 21:08 Vienna  USELESS-EUR  PAPER 24h follow-up ended at 23 Nov 21:08 Vienna. Neither ±10% level was reached. Retest €0.075667 at 22 Nov 21:08 Vienna. Lowest print through the final minute €0.072118 (-4.69%) at 23 Nov 13:41 Vienna.
+23 Nov 21:15 Vienna  TREAD-EUR  EARLY BREAKOUT (low setup confidence)  close €0.9326, 15m change +0.65% (+0.85% above prior 24h high €0.92472); volume 9.11x active (18.6x including quiet intervals), turnover ~€2,168; confirmation needs 3x active and €10,000
+23 Nov 22:00 Vienna  DGB-EUR  EARLY BREAKOUT (low setup confidence)  close €0.002556, 15m change +4.03% (+0.34% above prior 24h high €0.0025474); volume 2.33x active (4.65x including quiet intervals), turnover ~€429; confirmation needs 3x active and €10,000
+Hour ending 2026-11-23 21:00 UTC: 423 markets checked, 3 events, 0 errors.

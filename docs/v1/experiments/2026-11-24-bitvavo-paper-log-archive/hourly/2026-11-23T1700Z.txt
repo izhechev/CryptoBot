@@ -1,0 +1,21 @@
+23 Nov 17:01 Vienna  LISTA-EUR  PAPER +10% target €0.0816673 reached at 23 Nov 17:01 Vienna. Retest €0.074243 at 23 Nov 11:27 Vienna. Lowest print through the final minute €0.069385 (-6.54%) at 23 Nov 14:47 Vienna.
+23 Nov 17:15 Vienna  FIL-EUR  RETEST window ended at 23 Nov 17:15 Vienna. No trade touched €0.51 within two hours.
+23 Nov 17:15 Vienna  GRASS-EUR  RETEST window ended at 23 Nov 17:15 Vienna. No trade touched €0.36 within two hours.
+23 Nov 17:15 Vienna  ICP-EUR  RETEST window ended at 23 Nov 17:15 Vienna. No trade touched €1.9118 within two hours.
+23 Nov 17:15 Vienna  IOST-EUR  RETEST window ended at 23 Nov 17:15 Vienna. No trade touched €0.0005615 within two hours.
+23 Nov 17:15 Vienna  LISTA-EUR  CONFIRMED BREAKOUT (moderate setup confidence)  close €0.083637, 15m change +4.33% (+4.13% above prior 24h high €0.080322); volume 5.92x active (6.25x including quiet intervals), turnover ~€17,844; confirmation needs 3x active and €10,000
+23 Nov 17:15 Vienna  NEX-EUR  EARLY BREAKOUT (low setup confidence)  close €4.883e-07, 15m change -0.06% (+0.23% above prior 24h high €4.872e-07); volume 1.54x active (4.63x including quiet intervals), turnover ~€319; confirmation needs 3x active and €10,000
+23 Nov 17:15 Vienna  TRUMP-EUR  RETEST window ended at 23 Nov 17:15 Vienna. No trade touched €0.8472 within two hours.
+23 Nov 17:15 Vienna  VET-EUR  RETEST window ended at 23 Nov 17:15 Vienna. No trade touched €0.0044848 within two hours.
+23 Nov 17:15 Vienna  WIF-EUR  RETEST window ended at 23 Nov 17:15 Vienna. No trade touched €0.11459 within two hours.
+23 Nov 17:15 Vienna  ZIL-EUR  EARLY BREAKOUT (low setup confidence)  close €0.00075, 15m change +1.39% (+1.85% above prior 24h high €0.0007364); volume 2.87x active (3.82x including quiet intervals), turnover ~€1,525; confirmation needs 3x active and €10,000
+23 Nov 17:30 Vienna  AXIS-EUR  EARLY BREAKOUT (low setup confidence)  close €0.084191, 15m change +1.90% (+1.2% above prior 24h high €0.083194); volume 2.15x active (6.08x including quiet intervals), turnover ~€510; confirmation needs 3x active and €10,000
+23 Nov 17:30 Vienna  LIGHTER-EUR  RETEST window ended at 23 Nov 17:30 Vienna. No trade touched €2.3911 within two hours.
+23 Nov 17:30 Vienna  NOM-EUR  EARLY BREAKOUT (low setup confidence)  close €0.0011434, 15m change +0.56% (+0.75% above prior 24h high €0.0011349); volume 3.3x active (5.77x including quiet intervals), turnover ~€442; confirmation needs 3x active and €10,000
+23 Nov 17:30 Vienna  VSN-EUR  EARLY BREAKOUT (low setup confidence)  close €0.028679, 15m change +0.45% (+0.11% above prior 24h high €0.028648); volume 4.32x active (4.37x including quiet intervals), turnover ~€1,684; confirmation needs 3x active and €10,000
+23 Nov 17:30 Vienna  YGG-EUR  EARLY BREAKOUT (low setup confidence)  close €0.018918, 15m change -0.19% (+0.17% above prior 24h high €0.018886); volume 3.7x active (8.27x including quiet intervals), turnover ~€606; confirmation needs 3x active and €10,000
+23 Nov 17:45 Vienna  VSN-EUR  EARLY BREAKOUT (low setup confidence)  close €0.02876, 15m change +0.47% (+0.23% above prior 24h high €0.028693); volume 21.01x active (21.23x including quiet intervals), turnover ~€8,570; confirmation needs 3x active and €10,000
+23 Nov 17:45 Vienna  WMTX-EUR  EARLY BREAKOUT (low setup confidence)  close €0.013465, 15m change +0.10% (+0.1% above prior 24h high €0.013451); volume 4.17x active (10.82x including quiet intervals), turnover ~€217; confirmation needs 3x active and €10,000
+23 Nov 17:46 Vienna  PROM-EUR  PAPER −10% stop €5.30001 reached at 23 Nov 17:46 Vienna. Retest €5.8889 at 23 Nov 15:30 Vienna. Lowest print through the final minute €5.273 (-10.46%) at 23 Nov 17:46 Vienna.
+23 Nov 17:56 Vienna  ALLO-EUR  PAPER 24h follow-up ended at 23 Nov 17:56 Vienna. Neither ±10% level was reached. Retest €0.119603 at 22 Nov 17:56 Vienna. Lowest print through the final minute €0.111626 (-6.67%) at 23 Nov 10:57 Vienna.
+Hour ending 2026-11-23 17:00 UTC: 423 markets checked, 20 events, 0 errors.

@@ -1,0 +1,7 @@
+23 Nov 20:15 Vienna  CAP-EUR  CONFIRMED BREAKOUT (moderate setup confidence)  close €0.0981304, 15m change +4.39% (+2.6% above prior 24h high €0.0956397); volume 8.33x active (9.29x including quiet intervals), turnover ~€23,252; confirmation needs 3x active and €10,000
+23 Nov 20:15 Vienna  SOSO-EUR  EARLY BREAKOUT (low setup confidence)  close €0.25094, 15m change +0.88% (+0.66% above prior 24h high €0.2493); volume 7.86x active (14.52x including quiet intervals), turnover ~€394; confirmation needs 3x active and €10,000
+23 Nov 20:15 Vienna  WMTX-EUR  EARLY BREAKOUT (low setup confidence)  close €0.013675, 15m change +0.10% (+0.1% above prior 24h high €0.013661); volume 4.17x active (10.02x including quiet intervals), turnover ~€477; confirmation needs 3x active and €10,000
+23 Nov 20:45 Vienna  BABY-EUR  RETEST window ended at 23 Nov 20:45 Vienna. No trade touched €0.0074 within two hours.
+23 Nov 21:00 Vienna  QUID-EUR  EARLY BREAKOUT (low setup confidence)  close €0.041464, 15m change +0.15% (+0.1% above prior 24h high €0.041421); volume 13.16x active (27.47x including quiet intervals), turnover ~€1,333; confirmation needs 3x active and €10,000
+23 Nov 21:00 Vienna  SWELL-EUR  EARLY BREAKOUT (low setup confidence)  close €0.000474, 15m change +0.51% (+0.51% above prior 24h high €0.0004716); volume 6.9x active (17.89x including quiet intervals), turnover ~€368; confirmation needs 3x active and €10,000
+Hour ending 2026-11-23 20:00 UTC: 423 markets checked, 6 events, 0 errors.

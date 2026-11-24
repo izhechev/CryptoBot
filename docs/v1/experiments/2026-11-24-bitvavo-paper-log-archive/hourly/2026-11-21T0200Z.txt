@@ -1,0 +1,2 @@
+21 Nov 02:45 Vienna  POND-EUR  EARLY BREAKOUT (low setup confidence)  close €0.0008619, 15m change +10.76% (+8.87% above prior 24h high €0.0007917); volume 9.96x active (22.76x including quiet intervals), turnover ~€2,749; confirmation needs 3x active and €10,000
+Hour ending 2026-11-21 02:00 UTC: 424 markets checked, 1 events, 0 errors.

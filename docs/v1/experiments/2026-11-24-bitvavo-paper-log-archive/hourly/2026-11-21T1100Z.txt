@@ -1,0 +1,6 @@
+21 Nov 11:08 Vienna  ZKP-EUR  RETEST observed at 21 Nov 11:08 Vienna. Price traded at or below €0.029234. This is a paper reference price.
+21 Nov 11:15 Vienna  LQTY-EUR  EARLY BREAKOUT (low setup confidence)  close €0.12242, 15m change +3.36% (+0.34% above prior 24h high €0.122); volume 5.62x active (9.3x including quiet intervals), turnover ~€1,417; confirmation needs 3x active and €10,000
+21 Nov 11:22 Vienna  DRV-EUR  PAPER +10% target €0.27698 reached at 21 Nov 11:22 Vienna. Retest €0.2518 at 21 Nov 09:22 Vienna. Lowest print through the final minute €0.25119 (-0.24%) at 21 Nov 09:22 Vienna.
+21 Nov 11:30 Vienna  DRV-EUR  CONFIRMED BREAKOUT (moderate setup confidence)  close €0.27554, 15m change +1.01% (+0.26% above prior 24h high €0.27482); volume 4.84x active (4.99x including quiet intervals), turnover ~€20,166; confirmation needs 3x active and €10,000
+21 Nov 11:30 Vienna  DRV-EUR  RETEST observed at 21 Nov 11:30 Vienna. Price traded at or below €0.27482. This is a paper reference price.
+Hour ending 2026-11-21 11:00 UTC: 424 markets checked, 5 events, 0 errors.

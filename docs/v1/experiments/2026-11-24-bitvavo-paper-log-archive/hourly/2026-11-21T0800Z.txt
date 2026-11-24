@@ -1,0 +1,7 @@
+21 Nov 08:15 Vienna  DRV-EUR  EARLY BREAKOUT (low setup confidence)  close €0.2518, 15m change +4.13% (+1.12% above prior 24h high €0.249); volume 3.52x active (3.84x including quiet intervals), turnover ~€8,301; confirmation needs 3x active and €10,000
+21 Nov 08:16 Vienna  DRV-EUR  PAPER +10% target €0.256355 reached at 21 Nov 08:16 Vienna. Retest €0.23305 at 21 Nov 05:05 Vienna. Lowest print through the final minute €0.22922 (-1.64%) at 21 Nov 05:28 Vienna.
+21 Nov 08:30 Vienna  DRV-EUR  CONFIRMED BREAKOUT (moderate setup confidence)  close €0.26256, 15m change +4.33% (+4.27% above prior 24h high €0.2518); volume 12.77x active (13.93x including quiet intervals), turnover ~€32,475; confirmation needs 3x active and €10,000
+21 Nov 08:30 Vienna  YB-EUR  CONFIRMED BREAKOUT (moderate setup confidence)  close €0.05317, 15m change +3.42% (+4.21% above prior 24h high €0.05102); volume 7.64x active (7.72x including quiet intervals), turnover ~€18,119; confirmation needs 3x active and €10,000
+21 Nov 08:34 Vienna  SAPIEN-EUR  RETEST observed at 21 Nov 08:34 Vienna. Price traded at or below €0.039496. This is a paper reference price.
+21 Nov 08:45 Vienna  YB-EUR  CONFIRMED BREAKOUT (moderate setup confidence)  close €0.05395, 15m change +1.47% (+1.16% above prior 24h high €0.05333); volume 16.59x active (16.77x including quiet intervals), turnover ~€42,225; confirmation needs 3x active and €10,000
+Hour ending 2026-11-21 08:00 UTC: 424 markets checked, 6 events, 0 errors.

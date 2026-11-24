@@ -1,0 +1,3 @@
+23 Nov 22:45 Vienna  SYRUP-EUR  PAPER 24h follow-up ended at 23 Nov 22:45 Vienna. Neither ±10% level was reached. Retest €0.08268 at 22 Nov 22:45 Vienna. Lowest print through the final minute €0.0764 (-7.60%) at 23 Nov 22:21 Vienna.
+23 Nov 22:45 Vienna  ZRC-EUR  EARLY BREAKOUT (low setup confidence)  close €0.000825, 15m change +6.01% (+3.38% above prior 24h high €0.000798); volume 6.09x active (9.75x including quiet intervals), turnover ~€2,848; confirmation needs 3x active and €10,000
+Hour ending 2026-11-23 22:00 UTC: 423 markets checked, 2 events, 0 errors.

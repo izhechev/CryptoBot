@@ -1,0 +1,9 @@
+22 Nov 14:15 Vienna  CSPR-EUR  RETEST window ended at 22 Nov 14:15 Vienna. No trade touched €0.001594 within two hours.
+22 Nov 14:45 Vienna  FLR-EUR  CONFIRMED BREAKOUT (moderate setup confidence)  close €0.0046431, 15m change +0.94% (+0.46% above prior 24h high €0.004622); volume 24.84x active (70.15x including quiet intervals), turnover ~€38,494; confirmation needs 3x active and €10,000
+22 Nov 14:45 Vienna  MOVR-EUR  EARLY BREAKOUT (low setup confidence)  close €0.7575, 15m change +0.01% (+0.3% above prior 24h high €0.7552); volume 1.92x active (4.1x including quiet intervals), turnover ~€1,212; confirmation needs 3x active and €10,000
+22 Nov 14:45 Vienna  STX-EUR  EARLY BREAKOUT (low setup confidence)  close €0.24093, 15m change +0.99% (+1.8% above prior 24h high €0.23667); volume 1.78x active (3.55x including quiet intervals), turnover ~€2,477; confirmation needs 3x active and €10,000
+22 Nov 15:00 Vienna  CTC-EUR  EARLY BREAKOUT (low setup confidence)  close €0.05776, 15m change +1.21% (+2.36% above prior 24h high €0.05643); volume 1.39x active (3.1x including quiet intervals), turnover ~€157; confirmation needs 3x active and €10,000
+22 Nov 15:00 Vienna  DRV-EUR  RETEST window ended at 22 Nov 15:00 Vienna. No trade touched €0.32091 within two hours.
+22 Nov 15:00 Vienna  ETHFI-EUR  EARLY BREAKOUT (low setup confidence)  close €0.45663, 15m change +1.81% (+1.34% above prior 24h high €0.45059); volume 13.53x active (22.01x including quiet intervals), turnover ~€5,218; confirmation needs 3x active and €10,000
+22 Nov 15:00 Vienna  MOVR-EUR  CONFIRMED BREAKOUT (moderate setup confidence)  close €0.7596, 15m change +0.36% (+0.28% above prior 24h high €0.7575); volume 22.54x active (48.09x including quiet intervals), turnover ~€14,835; confirmation needs 3x active and €10,000
+Hour ending 2026-11-22 14:00 UTC: 424 markets checked, 8 events, 0 errors.
