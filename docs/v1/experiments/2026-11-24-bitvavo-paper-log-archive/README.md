@@ -2,6 +2,7 @@
 
 Archive of saved scans overlapping the three days before 24 November 2026 at 02:41 Vienna. The first hourly file includes the whole boundary hour. Older signal and retest timestamps are preserved when they explain an outcome in the archive.
 
+Open the [per-coin ledger](per-coin-ledger.md) for breakout metrics, linked paper retests, thresholds, outcomes and adverse prices.
 The [hourly files](hourly/) preserve the scanner output, including breakout close, 15-minute move, prior 24-hour high, distance above that high, active and quiet-inclusive volume multiples, estimated EUR turnover, retests, ±10% outcomes, timeouts and adverse prints when available. Retests and outcomes are observations at paper reference prices.
 
 The [manual scans](manual/) preserve supplemental terminal output. The [reports](reports/) preserve the previously formatted digests, which can overlap the hourly files and include earlier context. See the [21 November recap](../2026-11-21-bitvavo-breakout-paper-recap.md) for analysis of that day.
