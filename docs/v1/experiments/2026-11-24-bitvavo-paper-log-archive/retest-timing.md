@@ -15,10 +15,7 @@ The full archive recorded **16 targets, 6 stops and 12 completed 24-hour follow-
 
 ## Next paper test
 
-1. Choose the markets before collecting results and log consecutive confirmed breakouts, with one active paper setup per market. Record market, confirmation time, candle close and change, prior 24-hour high, percent above that high, active volume multiple and turnover.
-2. Set the prior 24-hour high as the paper reference. For up to two hours after confirmation, record the **first** observed minute that trades at or below that reference and its low. Record the elapsed minutes and keep the groups fixed at **under 30 minutes** and **30 minutes or longer within the retest window**. Record an untouched two-hour window as expired.
-3. From the retest, track the first touch of **reference × 1.10** or **reference × 0.90** for **24 hours**. Record the result, time, lowest observed price and its time. Preserve ambiguous intraminute ordering, a completed window with neither touch, and an unresolved outcome when coverage is incomplete.
-4. Compare the counts for both groups, including missing outcomes and expiries. Check whether the pattern appears across several different coins as well as across individual setups. The EUR levels are reference prices for scoring the same experiment on every coin.
+Follow the [confirmed-breakout retest timing rules](Rules.md#confirmed-breakout-retest-timing) for enrollment, reference prices, outcome windows and comparisons.
 
 ## LISTA/EUR paper example
 
