@@ -1,0 +1,62 @@
+--- a/index.js
++++ b/index.js
+@@ -269,9 +269,21 @@
+   const hasSevere = lowTurnover || heavyUpperWick || marginalOrOverextended || wideSpread;
+   let grade;
+   let profile = "";
++  let closeNote = null;
+   if (failedChecks.length === 0 && !hasSevere) {
+-    grade = "A";
+-    profile = "DODO_PROFILE";
++    const body = input.candleClose - input.candleOpen;
++    const upperWick = input.candleHigh - input.candleClose;
++    // One price-scale epsilon keeps equal decimal distances equal after subtraction.
++    const rounding = Number.EPSILON * input.candleHigh;
++    if (body > 0 && upperWick <= body + rounding) {
++      grade = "A";
++      profile = "DODO_PROFILE";
++      passedChecks.push("positive_body_covers_upper_wick");
++    } else {
++      grade = "B";
++      failedChecks.push("positive_body_covers_upper_wick");
++      closeNote = body === 0 ? "Open and close were equal" : "Upper wick exceeded the candle body";
++    }
+   } else if (hasSevere || failedChecks.length >= 2) {
+     grade = "C";
+   } else {
+@@ -283,6 +295,7 @@
+     turnoverEur: input.turnoverEur,
+     pctAbove24hHigh: input.pctAbove24hHigh,
+     upperWickRatio,
++    closeNote,
+     pre1hChangePct,
+     spreadPct,
+     passedChecks,
+@@ -331,6 +344,9 @@
+       if (setupQuality.spreadPct !== null) {
+         parts.push(`spread ${setupQuality.spreadPct.toFixed(2)}%`);
+       }
++      if (setupQuality.closeNote) {
++        parts.push(setupQuality.closeNote);
++      }
+       structureNote = `; structure: ${parts.join(", ")}`;
+     }
+     label = `${prefix} (moderate setup confidence)${gradeBadge}`;
+@@ -1473,6 +1489,9 @@
+   if (metrics.spread_pct !== null) {
+     structure.push(`Spread ${metrics.spread_pct.toFixed(2)}%`);
+   }
++  if (telegram.closeNote) {
++    structure.push(escapeHtml(telegram.closeNote));
++  }
+   if (structure.length) {
+     lines.push(`🔎 ${structure.join(" · ")}`);
+   }
+@@ -1984,6 +2003,7 @@
+                         profile: setupQuality?.profile ?? null,
+                         detail: `${stamps}  ${detail}`,
+                         telegram: {
++                          closeNote: setupQuality?.closeNote ?? null,
+                           candleChangePct: signalBar.open > 0 ? (signal.thrustClose / signalBar.open - 1) * 100 : null,
+                           graduatingReason: graduatingReason2,
+                           confirmVolumeMultiple: cfg.whaleVolumeMultiple,

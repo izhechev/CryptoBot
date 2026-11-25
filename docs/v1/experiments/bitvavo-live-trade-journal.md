@@ -20,6 +20,21 @@ Net results below reflect reported Bitvavo EUR cash flows (EUR received minus EU
 
 **Batch summary (20–21 Nov 2026):** 4 completed trades (1W / 3L), total EUR outlay €56.69, total EUR received €52.70, cumulative net result **-€3.99** (-7.04% on total EUR outlay).
 
+## T/EUR · 25 November 2026
+
+The user reported a loss. The exchange receipts for this trade are unavailable, so the entry, exit fill, fees and net EUR result are unknown. The prices below are public trades. The proposed target was €0.0036000 and the proposed stop was €0.0034220.
+
+| Vienna time | What was known at that time |
+|---|---|
+| 11:00 close | T closed at €0.0034660, up 0.60% on the candle and 0.67% above the prior 24h high of €0.0034429. Active volume was 35.55×, estimated turnover €17,557 and observed spread 0.35%. The original alert assigned Grade A, DODO profile. |
+| 11:48 | The minute high reached €0.0035548, still short of the target. |
+| 12:00 close | The 15m candle closed at €0.0034815, above the original breakout level after giving back most of its rise. |
+| 12:06 | The minute low of €0.0033994 crossed the breakout level and the proposed stop. The stop was the first of the two proposed levels to trade after the alert. |
+
+The signal candle opened at €0.0034453, peaked at €0.0034895 and closed at €0.0034660. Buyers kept €0.0000207 of the advance from the open and gave back €0.0000235 from the high. The legacy upper-wick check passed because that wick was only 35.6% of the candle’s full range. The [experimental Grade A rule](2026-11-24-bitvavo-paper-log-archive/Rules.md#grade-a-on-a-confirmed-breakout) would assign B using only evidence available when the alert was graded. This retrospective example motivated the rule and sits outside its prospective evaluation.
+
+[Bitvavo 15m candles](https://api.bitvavo.com/v2/T-EUR/candles?interval=15m&start=1795599900000&end=1795604400000) · [Bitvavo 1m candles](https://api.bitvavo.com/v2/T-EUR/candles?interval=1m&start=1795600800000&end=1795604880000)
+
 ## Lessons Learned (20–21 Nov)
 
 - **Cumulative batch result:** **-€3.99** across 4 trades (**1W / 3L**), showing that small early wins (+€0.15) are quickly outweighed by -7.5% to -10.5% stops, especially when position size increases (€27.90 on YB-EUR vs €9.00 to €10.00 on earlier tests).

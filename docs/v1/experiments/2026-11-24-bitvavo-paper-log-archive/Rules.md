@@ -1,5 +1,21 @@
 # Rules
 
+## Grade A on a confirmed breakout
+
+**Experimental question.** Among otherwise Grade A confirmations, does an alert perform better when its signal candle keeps at least as much of the advance from its open as it gives back from its high?
+
+| At the signal close | Grade under the experiment |
+|---|---|
+| Meets the previous A criteria, closes above its open, and the body (close minus open) is at least as long as the upper wick (high minus close) | A, DODO profile |
+| Meets the previous A criteria, but closes flat or has a longer upper wick than body | B, with the reason in the alert |
+| Already graded B or C | Keep that grade |
+
+Use the completed 15m signal candle. Equality qualifies for a positive body, allowing only floating-point rounding at the price scale. Evaluate the original turnover, wick, clearance, 1h change and spread checks as before. Keep the original breakout classification, alert time and paper reference. A later reversal can explain a trade’s outcome but cannot change its recorded signal grade.
+
+**Evidence so far.** The [T trade](../bitvavo-live-trade-journal.md#teur--25-november-2026) would go from A to B. In the [archived ledger](per-coin-ledger.md), 15 signals had a linked final ±10% paper outcome and a matching public signal candle. The previous and proposed candle checks each passed the same 8 of 9 target cases and 4 of 6 stop cases. For example, DODO at 09:30 Vienna on 21 November had a €0.000679 body and €0.000561 upper wick, passing both checks. This comparison tests the candle check only. It supplies no measured improvement in outcomes or estimate of the chance of reaching a live target.
+
+**Forward test.** Start a new cohort with the first confirmation graded by this release. Compare consecutive otherwise-A confirmations that kept A with those capped at B, using the same original retest and ±10% paper follow-up below. Count retest expiries, incomplete records and ambiguous outcomes separately. Use signal time and market to join the alert with its outcome. A B alert explicitly giving the candle-body reason identifies the capped group. Report sample sizes, target hits and stop hits for both groups before considering any change to trading targets. Historical alerts retain the grade originally sent.
+
 ## Rebounds after an expired breakout
 
 **Does a rebound do better when the latest completed 15-minute candle closes back above the old breakout level?** The [BTC case](README.md#btceur-rebound-case-24-november-2026) prompted this question. It is a retrospective example.
