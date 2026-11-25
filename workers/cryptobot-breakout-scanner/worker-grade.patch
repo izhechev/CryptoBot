@@ -32,17 +32,17 @@
      pre1hChangePct,
      spreadPct,
      passedChecks,
-@@ -331,6 +344,9 @@
+@@ -330,6 +343,9 @@
+       }
        if (setupQuality.spreadPct !== null) {
          parts.push(`spread ${setupQuality.spreadPct.toFixed(2)}%`);
-       }
++      }
 +      if (setupQuality.closeNote) {
 +        parts.push(setupQuality.closeNote);
-+      }
+       }
        structureNote = `; structure: ${parts.join(", ")}`;
      }
-     label = `${prefix} (moderate setup confidence)${gradeBadge}`;
-@@ -1473,6 +1489,9 @@
+@@ -1473,11 +1489,22 @@
    if (metrics.spread_pct !== null) {
      structure.push(`Spread ${metrics.spread_pct.toFixed(2)}%`);
    }
@@ -52,11 +52,25 @@
    if (structure.length) {
      lines.push(`🔎 ${structure.join(" · ")}`);
    }
-@@ -1984,6 +2003,7 @@
+   if (eventType !== "confirmed_breakout") {
+     lines.push(`✅ Confirmation needs ${telegram.confirmVolumeMultiple}× active volume and €${formatCommaInt(telegram.confirmTurnoverEur)} traded`);
++  }
++  const close = metrics.close;
++  const stop = telegram.signalLow;
++  const target = close + 2 * (close - stop);
++  if (Number.isFinite(close) && Number.isFinite(stop) && stop > 0 && stop < close && Number.isFinite(target)) {
++    lines.push(`🧪 Paper plan from close · TP <b>€${formatPriceG12(target)}</b> · SL <b>€${formatPriceG12(stop)}</b>`);
++  } else {
++    lines.push("🧪 Paper plan unavailable · needs a positive candle low below the close");
+   }
+   if (telegram.followupNote) {
+     lines.push(`📝 ${escapeHtml(telegram.followupNote.slice(2))}`);
+@@ -1984,6 +2011,8 @@
                          profile: setupQuality?.profile ?? null,
                          detail: `${stamps}  ${detail}`,
                          telegram: {
 +                          closeNote: setupQuality?.closeNote ?? null,
++                          signalLow: signalBar.low,
                            candleChangePct: signalBar.open > 0 ? (signal.thrustClose / signalBar.open - 1) * 100 : null,
                            graduatingReason: graduatingReason2,
                            confirmVolumeMultiple: cfg.whaleVolumeMultiple,

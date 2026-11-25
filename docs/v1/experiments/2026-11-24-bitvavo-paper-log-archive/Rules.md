@@ -1,5 +1,9 @@
 # Rules
 
+## Proposed exits on Telegram breakout alerts
+
+On an early, graduating or confirmed breakout, use the completed signal candle’s close as the hypothetical entry and its low as the proposed stop. The proposed target equals the close plus twice the distance from the close to the low. Show the plan as unavailable if the low is missing, nonpositive or at or above the close. These are gross reference levels before fees, spread and slippage. The separate retest study below continues to score ±10% from the prior high. The [MMT +10% paper outcome](../2026-11-25-mmt-paper-outcome.md) belongs to that retest study.
+
 ## Grade A on a confirmed breakout
 
 **Experimental question.** Among otherwise Grade A confirmations, does an alert perform better when its signal candle keeps at least as much of the advance from its open as it gives back from its high?

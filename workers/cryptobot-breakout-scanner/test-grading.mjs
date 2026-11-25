@@ -9,7 +9,7 @@ if (!workerPath || (mode && mode !== "--baseline")) {
 }
 const baseline = mode === "--baseline";
 const source = await readFile(workerPath, "utf8");
-const instrumented = source + "\nexport { scoreSetupQuality, runTick };\n";
+const instrumented = source + "\nexport { scoreSetupQuality, runTick, formatTelegramBreakout };\n";
 const worker = await import("data:text/javascript;base64," + Buffer.from(instrumented).toString("base64"));
 
 const threshold = {
@@ -107,8 +107,23 @@ test("a real scan tick stays confirmed and propagates the grade to storage and b
   assert.equal(staged.setupProfile, baseline ? "DODO_PROFILE" : "");
   assert.equal(webhook.event_type, "confirmed_breakout");
   assert.equal(webhook.grade, staged.setupGrade);
+  if (!baseline) assert.match(telegram, /TP <b>€0\.003551<\/b> · SL <b>€0\.0034235<\/b>/);
   assert.match(telegram, new RegExp("Grade " + staged.setupGrade));
   assert.match(telegram, /Moderate confidence/);
   assert.equal(telegram.includes("Upper wick exceeded the candle body"), !baseline);
   assert.equal(webhook.detail.includes("Upper wick exceeded the candle body"), !baseline);
+});
+
+test("Telegram exit levels apply to each breakout stage only", { skip: baseline }, () => {
+  for (const eventType of ["early_breakout", "graduating_breakout", "confirmed_breakout"]) {
+    const payload = { market: "MMT-EUR", timestampMs: 0, eventType,
+      metrics: { close: 0.5, prior_24h_high: 0.49, spread_pct: null, pre_1h_change_pct: null,
+        upper_wick_ratio: null, vol_multiple_active: 3, pct_above_24h_high: 2, turnover_eur: 10000 },
+      telegram: { candleChangePct: null, signalLow: 0.48, confirmVolumeMultiple: 3, confirmTurnoverEur: 10000 } };
+    assert.match(worker.formatTelegramBreakout(payload), /Paper plan from close · TP <b>€0\.54<\/b> · SL <b>€0\.48<\/b>/);
+    for (const low of [0.5, 0.51, null, undefined, 0, NaN]) {
+      assert.match(worker.formatTelegramBreakout({ ...payload, telegram: { ...payload.telegram, signalLow: low } }), /Paper plan unavailable/);
+    }
+    assert.equal(worker.formatTelegramBreakout({ ...payload, eventType: "retest" }), null);
+  }
 });
